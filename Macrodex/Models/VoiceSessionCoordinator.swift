@@ -255,7 +255,7 @@ final class VoiceSessionCoordinator {
     }
 
     private func applyAudioSessionCategory() throws {
-        var options: AVAudioSession.CategoryOptions = [.mixWithOthers, .allowBluetoothHFP]
+        var options: AVAudioSession.CategoryOptions = [.mixWithOthers, .allowBluetooth]
         if speakerModeEnabled {
             options.insert(.defaultToSpeaker)
         }
