@@ -16,21 +16,30 @@ env:
   DEVELOPMENT_TEAM: ${{ vars.DEVELOPMENT_TEAM }}
   DERIVED_DATA_PATH: .ci/DerivedData
   ASC_TESTFLIGHT_GROUPS: ${{ vars.ASC_TESTFLIGHT_GROUPS }}
+  XCODE_APP: /Applications/Xcode_26.4.1.app
 
 jobs:
   build:
     name: Build
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 60
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show toolchain
+      - name: Select Xcode
         run: |
+          if [ ! -d "$XCODE_APP" ]; then
+            echo "::error::Required Xcode is not installed at $XCODE_APP"
+            ls -1 /Applications | grep '^Xcode' || true
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
           xcodebuild -version
           swift --version
+          echo "iPhoneOS SDK: $(xcrun --sdk iphoneos --show-sdk-version)"
+          echo "iPhoneSimulator SDK: $(xcrun --sdk iphonesimulator --show-sdk-version)"
 
       - name: Restore Xcode caches
         uses: actions/cache@v4
