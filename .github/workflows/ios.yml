@@ -1,0 +1,196 @@
+name: iOS
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PROJECT: Macrodex.xcodeproj
+  SCHEME: Macrodex
+  DEVELOPMENT_TEAM: ${{ vars.DEVELOPMENT_TEAM }}
+  DERIVED_DATA_PATH: .ci/DerivedData
+  ASC_TESTFLIGHT_GROUPS: ${{ vars.ASC_TESTFLIGHT_GROUPS }}
+
+jobs:
+  build:
+    name: Build
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Restore Xcode caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            .ci/DerivedData/SourcePackages
+            .ci/DerivedData/Build/Intermediates.noindex
+            .ci/DerivedData/Build/Products
+            ~/Library/Caches/org.swift.swiftpm
+            ~/Library/org.swift.swiftpm
+          key: ${{ runner.os }}-${{ runner.arch }}-xcode-${{ hashFiles('Macrodex.xcodeproj/project.pbxproj', 'Macrodex.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', 'project.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-xcode-
+
+      - name: Resolve packages
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -derivedDataPath "$DERIVED_DATA_PATH"
+
+      - name: Build simulator app
+        run: |
+          xcodebuild build \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Debug \
+            -destination "generic/platform=iOS Simulator" \
+            -derivedDataPath "$DERIVED_DATA_PATH" \
+            ARCHS=arm64 \
+          CODE_SIGNING_ALLOWED=NO
+
+      - name: Validate App Store Connect secrets
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+          ASC_PRIVATE_KEY_B64: ${{ secrets.ASC_PRIVATE_KEY_B64 }}
+        run: |
+          missing=0
+          for name in ASC_APP_ID ASC_KEY_ID ASC_ISSUER_ID DEVELOPMENT_TEAM; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name is required for TestFlight uploads"
+              missing=1
+            fi
+          done
+
+          if [ -z "${ASC_PRIVATE_KEY:-}" ] && [ -z "${ASC_PRIVATE_KEY_B64:-}" ]; then
+            echo "::error::ASC_PRIVATE_KEY or ASC_PRIVATE_KEY_B64 is required for TestFlight uploads"
+            missing=1
+          fi
+
+          exit "$missing"
+
+      - name: Prepare App Store Connect key
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+          ASC_PRIVATE_KEY_B64: ${{ secrets.ASC_PRIVATE_KEY_B64 }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/private_keys"
+          key_path="$RUNNER_TEMP/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+
+          if [ -n "${ASC_PRIVATE_KEY_B64:-}" ]; then
+            printf "%s" "$ASC_PRIVATE_KEY_B64" | base64 --decode > "$key_path"
+          else
+            printf "%s" "$ASC_PRIVATE_KEY" > "$key_path"
+          fi
+
+          chmod 600 "$key_path"
+          echo "ASC_PRIVATE_KEY_PATH=$key_path" >> "$GITHUB_ENV"
+
+      - name: Archive release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          xcodebuild clean archive \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -archivePath "$RUNNER_TEMP/Macrodex.xcarchive" \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath "$DERIVED_DATA_PATH" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_PRIVATE_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
+            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER"
+
+      - name: Export IPA
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/Macrodex.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist ci/ExportOptions.plist \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_PRIVATE_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+      - name: Install App Store Connect CLI
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          brew update
+          if brew list asc >/dev/null 2>&1; then
+            brew upgrade asc
+          else
+            brew install asc
+          fi
+          asc --version
+
+      - name: Upload to TestFlight
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_UPLOAD_TIMEOUT_SECONDS: "1800"
+        run: |
+          ipa_path="$(find "$RUNNER_TEMP/export" -maxdepth 1 -name "*.ipa" -print -quit)"
+          if [ -z "$ipa_path" ]; then
+            echo "::error::No IPA was exported"
+            exit 1
+          fi
+
+          upload_args=(
+            publish testflight
+            --app "$ASC_APP_ID"
+            --ipa "$ipa_path"
+            --build-number "$GITHUB_RUN_NUMBER"
+            --wait
+            --timeout 45m
+            --submit
+            --confirm
+            --notify
+            --test-notes "Latest public beta build from GitHub."
+            --locale en-US
+            --pretty
+          )
+
+          if [ -n "${ASC_TESTFLIGHT_GROUPS:-}" ]; then
+            upload_args+=(--group "$ASC_TESTFLIGHT_GROUPS")
+          fi
+
+          asc "${upload_args[@]}"
+
+      - name: Upload IPA artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Macrodex-ipa
+          path: ${{ runner.temp }}/export/*.ipa
+          if-no-files-found: error

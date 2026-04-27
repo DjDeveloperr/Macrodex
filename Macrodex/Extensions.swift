@@ -1,0 +1,505 @@
+import SwiftUI
+import UIKit
+
+enum AppHaptics {
+    static func light(intensity: CGFloat = 0.7) {
+        let generator = UIImpactFeedbackGenerator(style: .light)
+        generator.impactOccurred(intensity: intensity)
+    }
+
+    static func medium(intensity: CGFloat = 0.8) {
+        let generator = UIImpactFeedbackGenerator(style: .medium)
+        generator.impactOccurred(intensity: intensity)
+    }
+}
+
+extension Color {
+    init(hex: String) {
+        let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        var int: UInt64 = 0
+        Scanner(string: hex).scanHexInt64(&int)
+        let r = Double((int >> 16) & 0xFF) / 255
+        let g = Double((int >> 8) & 0xFF) / 255
+        let b = Double(int & 0xFF) / 255
+        self.init(red: r, green: g, blue: b)
+    }
+}
+
+extension UIColor {
+    convenience init(hex: String) {
+        let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        var int: UInt64 = 0
+        Scanner(string: hex).scanHexInt64(&int)
+        let r = CGFloat((int >> 16) & 0xFF) / 255
+        let g = CGFloat((int >> 8) & 0xFF) / 255
+        let b = CGFloat(int & 0xFF) / 255
+        self.init(red: r, green: g, blue: b, alpha: 1)
+    }
+}
+
+// MARK: - Central Theme
+
+enum MacrodexTheme {
+    private static var light: ResolvedTheme { .defaultLight }
+    private static var dark: ResolvedTheme { .defaultDark }
+
+    static func adaptive(light: String, dark: String) -> Color {
+        Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(hex: dark) : UIColor(hex: light) })
+    }
+
+    static var accent: Color        { adaptive(light: light.accent, dark: dark.accent) }
+    static var accentStrong: Color   { adaptive(light: light.accentStrong, dark: dark.accentStrong) }
+    static var textPrimary: Color    { adaptive(light: light.textPrimary, dark: dark.textPrimary) }
+    static var textSecondary: Color  { adaptive(light: light.textSecondary, dark: dark.textSecondary) }
+    static var textMuted: Color      { adaptive(light: light.textMuted, dark: dark.textMuted) }
+    static var textBody: Color       { adaptive(light: light.textBody, dark: dark.textBody) }
+    static var textSystem: Color     { adaptive(light: light.textSystem, dark: dark.textSystem) }
+    static var surface: Color        { adaptive(light: light.surface, dark: dark.surface) }
+    static var surfaceLight: Color   { adaptive(light: light.surfaceLight, dark: dark.surfaceLight) }
+    static var border: Color         { adaptive(light: light.border, dark: dark.border) }
+    static var separator: Color      { adaptive(light: light.separator, dark: dark.separator) }
+    static var danger: Color         { adaptive(light: light.danger, dark: dark.danger) }
+    static var success: Color        { adaptive(light: light.success, dark: dark.success) }
+    static var warning: Color        { adaptive(light: light.warning, dark: dark.warning) }
+    static var textOnAccent: Color   { adaptive(light: light.textOnAccent, dark: dark.textOnAccent) }
+    static var codeBackground: Color { adaptive(light: light.codeBackground, dark: dark.codeBackground) }
+
+    static let overlayScrim: Color = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor.black.withAlphaComponent(0.5)
+            : UIColor.black.withAlphaComponent(0.3)
+    })
+
+    static var gradientColors: [Color] {
+        let isDark = UITraitCollection.current.userInterfaceStyle == .dark
+        let theme = isDark ? dark : light
+        return gradientColors(for: theme, isDark: isDark)
+    }
+
+    static func gradientColors(for colorScheme: ColorScheme) -> [Color] {
+        let isDark = colorScheme == .dark
+        let theme = isDark ? dark : light
+        return gradientColors(for: theme, isDark: isDark)
+    }
+
+    private static func gradientColors(for theme: ResolvedTheme, isDark: Bool) -> [Color] {
+        let bg = theme.background
+        return [
+            Color(hex: bg),
+            Color(hex: ResolvedTheme.adjustBrightness(bg, by: isDark ? 0.02 : -0.01)),
+            Color(hex: ResolvedTheme.adjustBrightness(bg, by: isDark ? -0.01 : 0.01)),
+        ]
+    }
+
+    static var backgroundGradient: LinearGradient {
+        LinearGradient(
+            colors: gradientColors,
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    static func backgroundGradient(for colorScheme: ColorScheme) -> LinearGradient {
+        LinearGradient(
+            colors: gradientColors(for: colorScheme),
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    static var headerScrim: [Color] {
+        let isDark = UITraitCollection.current.userInterfaceStyle == .dark
+        let bg = isDark ? dark.background : light.background
+        let bgColor = Color(hex: bg)
+        return [bgColor.opacity(0.7), bgColor.opacity(0.3), .clear]
+    }
+}
+
+enum FontFamilyOption: String, CaseIterable, Identifiable {
+    case system = "system"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        "System"
+    }
+
+    var isMono: Bool { false }
+}
+
+enum MacrodexFont {
+    static var storedFamily: FontFamilyOption {
+        .system
+    }
+
+    static var markdownFontName: String {
+        ".AppleSystemUIFont"
+    }
+
+    static func styled(
+        _ style: Font.TextStyle,
+        weight: Font.Weight = .regular,
+        scale: CGFloat = 1.0
+    ) -> Font {
+        let pointSize = UIFont.preferredFont(forTextStyle: style.uiTextStyle).pointSize * scale
+        return styled(size: pointSize, weight: weight, relativeTo: style)
+    }
+
+    static func styled(size: CGFloat, weight: Font.Weight = .regular, scale: CGFloat = 1.0) -> Font {
+        styled(size: size * scale, weight: weight, relativeTo: nil)
+    }
+
+    static func monospaced(
+        _ style: Font.TextStyle,
+        weight: Font.Weight = .regular,
+        scale: CGFloat = 1.0
+    ) -> Font {
+        let pointSize = UIFont.preferredFont(forTextStyle: style.uiTextStyle).pointSize * scale
+        return monoFont(size: pointSize, weight: weight, relativeTo: style)
+    }
+
+    static func monospaced(size: CGFloat, weight: Font.Weight = .regular, scale: CGFloat = 1.0) -> Font {
+        monoFont(size: size * scale, weight: weight, relativeTo: nil)
+    }
+
+    private static func styled(size: CGFloat, weight: Font.Weight, relativeTo style: Font.TextStyle?) -> Font {
+        return .system(size: size, weight: weight)
+    }
+
+    private static func monoFont(size: CGFloat, weight: Font.Weight, relativeTo style: Font.TextStyle?) -> Font {
+        return .system(size: size, weight: weight, design: .monospaced)
+    }
+
+    static func uiMonoFont(size: CGFloat, bold: Bool = false) -> UIFont {
+        UIFont.monospacedSystemFont(ofSize: size, weight: bold ? .bold : .regular)
+    }
+
+    static func sampleFont(family: FontFamilyOption, size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        return .system(size: size, weight: weight)
+    }
+
+    static var conversationBodyPointSize: CGFloat {
+        UIFont.preferredFont(forTextStyle: .body).pointSize
+    }
+}
+
+// MARK: - App-Wide Text Scaling
+
+enum ConversationTextSize: Int, CaseIterable {
+    case tiny = 0
+    case small = 1
+    case medium = 2
+    case large = 3
+    case larger = 4
+    case xLarge = 5
+    case huge = 6
+
+    var scale: CGFloat {
+        1.0
+    }
+
+    var label: String {
+        switch self {
+        case .tiny:     return "Tiny"
+        case .small:    return "Small"
+        case .medium:   return "Medium"
+        case .large:    return "Large"
+        case .larger:   return "Larger"
+        case .xLarge:   return "X-Large"
+        case .huge:     return "Huge"
+        }
+    }
+
+    static func clamped(rawValue: Int) -> ConversationTextSize {
+        let bounded = min(max(rawValue, tiny.rawValue), huge.rawValue)
+        return ConversationTextSize(rawValue: bounded) ?? .large
+    }
+}
+
+private struct TextScaleKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 1.0
+}
+
+extension EnvironmentValues {
+    var textScale: CGFloat {
+        get { self[TextScaleKey.self] }
+        set { self[TextScaleKey.self] = newValue }
+    }
+}
+
+// MARK: - Auto-Scaling Font View Modifiers
+
+extension View {
+    func macrodexFont(size: CGFloat, weight: Font.Weight = .regular) -> some View {
+        modifier(ScaledSizeFontModifier(size: size, weight: weight))
+    }
+
+    func macrodexFont(_ style: Font.TextStyle, weight: Font.Weight = .regular) -> some View {
+        modifier(ScaledStyleFontModifier(style: style, weight: weight))
+    }
+
+    func macrodexMonoFont(size: CGFloat, weight: Font.Weight = .regular) -> some View {
+        modifier(ScaledMonoFontModifier(size: size, weight: weight))
+    }
+}
+
+struct KeyboardDismissTapInstaller: UIViewRepresentable {
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView(frame: .zero)
+        view.isUserInteractionEnabled = false
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        DispatchQueue.main.async {
+            context.coordinator.installIfNeeded(from: uiView)
+        }
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        private weak var installedWindow: UIWindow?
+        private weak var recognizer: UITapGestureRecognizer?
+
+        deinit {
+            if let recognizer {
+                installedWindow?.removeGestureRecognizer(recognizer)
+            }
+        }
+
+        func installIfNeeded(from view: UIView) {
+            guard let window = view.window, installedWindow !== window else { return }
+            if let recognizer {
+                installedWindow?.removeGestureRecognizer(recognizer)
+            }
+            let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap))
+            tap.cancelsTouchesInView = false
+            tap.delegate = self
+            window.addGestureRecognizer(tap)
+            installedWindow = window
+            recognizer = tap
+        }
+
+        @objc private func handleTap() {
+            UIApplication.shared.macrodexDismissKeyboard()
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            guard let view = touch.view else { return true }
+            return !view.macrodexIsTextInputDescendant
+        }
+    }
+}
+
+extension UIApplication {
+    func macrodexDismissKeyboard() {
+        NotificationCenter.default.post(name: .macrodexShouldDismissKeyboard, object: nil)
+        sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
+}
+
+extension Notification.Name {
+    static let macrodexShouldDismissKeyboard = Notification.Name("macrodexShouldDismissKeyboard")
+}
+
+private extension UIView {
+    var macrodexIsTextInputDescendant: Bool {
+        var view: UIView? = self
+        while let current = view {
+            if current is UITextField || current is UITextView {
+                return true
+            }
+            view = current.superview
+        }
+        return false
+    }
+}
+
+private struct ScaledSizeFontModifier: ViewModifier {
+    @Environment(\.textScale) private var textScale
+    let size: CGFloat
+    let weight: Font.Weight
+
+    func body(content: Content) -> some View {
+        content.font(MacrodexFont.styled(size: size, weight: weight, scale: textScale))
+    }
+}
+
+private struct ScaledStyleFontModifier: ViewModifier {
+    @Environment(\.textScale) private var textScale
+    let style: Font.TextStyle
+    let weight: Font.Weight
+
+    func body(content: Content) -> some View {
+        content.font(MacrodexFont.styled(style, weight: weight, scale: textScale))
+    }
+}
+
+private struct ScaledMonoFontModifier: ViewModifier {
+    @Environment(\.textScale) private var textScale
+    let size: CGFloat
+    let weight: Font.Weight
+
+    func body(content: Content) -> some View {
+        content.font(MacrodexFont.monospaced(size: size, weight: weight, scale: textScale))
+    }
+}
+
+private extension Font.TextStyle {
+    var uiTextStyle: UIFont.TextStyle {
+        switch self {
+        case .largeTitle: return .largeTitle
+        case .title: return .title1
+        case .title2: return .title2
+        case .title3: return .title3
+        case .headline: return .headline
+        case .subheadline: return .subheadline
+        case .body: return .body
+        case .callout: return .callout
+        case .footnote: return .footnote
+        case .caption: return .caption1
+        case .caption2: return .caption2
+        @unknown default: return .body
+        }
+    }
+}
+
+func abbreviateHomePath(_ path: String) -> String {
+    let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "~" }
+    for basePrefix in ["/Users", "/home"] {
+        let prefix = basePrefix + "/"
+        guard trimmed.hasPrefix(prefix) else { continue }
+        let remainder = trimmed.dropFirst(prefix.count)
+        guard let slashIndex = remainder.firstIndex(of: "/") else { return "~" }
+        return "~" + remainder[slashIndex...]
+    }
+    return trimmed
+}
+
+func relativeDate(_ timestamp: Int64) -> String {
+    let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
+    let formatter = RelativeDateTimeFormatter()
+    formatter.unitsStyle = .abbreviated
+    return formatter.localizedString(for: date, relativeTo: Date())
+}
+
+// MARK: - Glass Effect Availability Wrappers
+
+struct GlassRectModifier: ViewModifier {
+    let cornerRadius: CGFloat
+    var tint: Color?
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            if let tint {
+                content.glassEffect(.regular.tint(tint), in: .rect(cornerRadius: cornerRadius))
+            } else {
+                content.glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
+            }
+        } else {
+            content
+                .background(MacrodexTheme.surfaceLight.opacity(0.9))
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+                .overlay(
+                    RoundedRectangle(cornerRadius: cornerRadius)
+                        .stroke((tint ?? MacrodexTheme.border).opacity(0.4), lineWidth: 1)
+                )
+        }
+    }
+}
+
+struct GlassRoundedRectModifier: ViewModifier {
+    var cornerRadius: CGFloat = 16
+    var interactive: Bool = false
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            if interactive {
+                content.glassEffect(.regular.interactive(), in: .rect(cornerRadius: cornerRadius))
+            } else {
+                content.glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
+            }
+        } else {
+            content
+                .background(MacrodexTheme.surfaceLight)
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        }
+    }
+}
+
+struct GlassCapsuleModifier: ViewModifier {
+    var interactive: Bool = false
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            if interactive {
+                content.glassEffect(.regular.interactive(), in: .capsule)
+            } else {
+                content.glassEffect(.regular, in: .capsule)
+            }
+        } else {
+            content
+                .background(MacrodexTheme.surfaceLight)
+                .clipShape(Capsule())
+        }
+    }
+}
+
+struct GlassCircleModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.glassEffect(.regular, in: .circle)
+        } else {
+            content
+                .background(MacrodexTheme.surfaceLight)
+                .clipShape(Circle())
+        }
+    }
+}
+
+/// Wraps its children in iOS 26's `GlassEffectContainer` when available so
+/// views with matching `glassMorphID`s blob between each other with a real
+/// liquid-glass transition. On older iOS it's a pass-through.
+struct GlassMorphContainer<Content: View>: View {
+    var spacing: CGFloat = 10
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: spacing) { content() }
+        } else {
+            content()
+        }
+    }
+}
+
+extension View {
+    @ViewBuilder
+    func stableBottomToolbar() -> some View {
+        let content = self
+            .toolbarVisibility(.visible, for: .bottomBar)
+            .toolbarBackgroundVisibility(.visible, for: .bottomBar)
+
+        if #available(iOS 26.0, *) {
+            content.tabBarMinimizeBehavior(.never)
+        } else {
+            content
+        }
+    }
+
+    /// Applies iOS 26's `glassEffectID` — which morphs glass between matched
+    /// views inside a `GlassEffectContainer` — or falls back to
+    /// `matchedGeometryEffect` so the frame still tweens on older iOS.
+    @ViewBuilder
+    func glassMorphID(_ id: String, in namespace: Namespace.ID) -> some View {
+        if #available(iOS 26.0, *) {
+            self.glassEffectID(id, in: namespace)
+        } else {
+            self.matchedGeometryEffect(id: id, in: namespace)
+        }
+    }
+}

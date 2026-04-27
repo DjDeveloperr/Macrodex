@@ -1,0 +1,32 @@
+# macOS / editor state
+.DS_Store
+.vscode/
+
+# Xcode user and build state
+*.xcuserstate
+xcuserdata/
+DerivedData/
+DerivedData*/
+.derivedData*/
+build/
+.build/
+*.xcresult
+sim-*.png
+sim-after-install.png
+
+# Local automation / release scratch space
+.asc/
+.local-ci/
+.local-size-test/
+.device-crashes/
+ci/ExportOptionsTestFlight.plist
+
+# Local environment and signing material
+.env
+.env.*
+Macrodex/Resources/Fonts/
+*.cer
+*.key
+*.p8
+*.p12
+*.mobileprovision
