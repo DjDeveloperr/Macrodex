@@ -566,22 +566,20 @@ final class PiLogFoodToolRunner: PiToolRunner {
     }
 
     private func normalizedServing(args: [String: PiJSONValue], match: FoodMatch?) -> Serving {
-        let hasExplicitQuantity = args["quantity"]?.numberValue != nil
-            || args["servingCount"]?.numberValue != nil
-            || args["amount"]?.numberValue != nil
-        let quantity = args["quantity"]?.numberValue
-            ?? args["servingCount"]?.numberValue
-            ?? args["amount"]?.numberValue
-            ?? match?.defaultServingQty
-            ?? 1
+        let explicitQuantity = args["quantity"]?.numberValue
+        let servingCount = args["servingCount"]?.numberValue
+        let amount = args["amount"]?.numberValue
+        let hasExplicitQuantity = explicitQuantity != nil || servingCount != nil || amount != nil
+        let quantity = explicitQuantity ?? servingCount ?? amount ?? match?.defaultServingQty ?? 1
         var unit = Self.firstString(args["unit"], args["servingUnit"])
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if unit.isEmpty {
             unit = match?.defaultServingUnit ?? (hasExplicitQuantity ? Self.countUnitGuess(from: match?.name ?? Self.foodNameFallback(args: args)) : "serving")
         }
-        var weight = args["weightGrams"]?.numberValue
-            ?? args["weight_g"]?.numberValue
-            ?? args["weight"]?.numberValue
+        let explicitWeightGrams = args["weightGrams"]?.numberValue
+        let snakeWeightGrams = args["weight_g"]?.numberValue
+        let plainWeight = args["weight"]?.numberValue
+        var weight = explicitWeightGrams ?? snakeWeightGrams ?? plainWeight
         var notes: [String] = []
         let lowerUnit = unit.lowercased()
         let isMassOrVolume = ["g", "gram", "grams", "ml", "milliliter", "milliliters"].contains(lowerUnit)
