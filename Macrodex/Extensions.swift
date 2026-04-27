@@ -394,6 +394,7 @@ struct GlassRectModifier: ViewModifier {
     var tint: Color?
 
     func body(content: Content) -> some View {
+        #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             if let tint {
                 content.glassEffect(.regular.tint(tint), in: .rect(cornerRadius: cornerRadius))
@@ -401,14 +402,21 @@ struct GlassRectModifier: ViewModifier {
                 content.glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
             }
         } else {
-            content
-                .background(MacrodexTheme.surfaceLight.opacity(0.9))
-                .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
-                .overlay(
-                    RoundedRectangle(cornerRadius: cornerRadius)
-                        .stroke((tint ?? MacrodexTheme.border).opacity(0.4), lineWidth: 1)
-                )
+            fallback(content: content)
         }
+        #else
+        fallback(content: content)
+        #endif
+    }
+
+    private func fallback(content: Content) -> some View {
+        content
+            .background(MacrodexTheme.surfaceLight.opacity(0.9))
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .stroke((tint ?? MacrodexTheme.border).opacity(0.4), lineWidth: 1)
+            )
     }
 }
 
@@ -417,6 +425,7 @@ struct GlassRoundedRectModifier: ViewModifier {
     var interactive: Bool = false
 
     func body(content: Content) -> some View {
+        #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             if interactive {
                 content.glassEffect(.regular.interactive(), in: .rect(cornerRadius: cornerRadius))
@@ -424,10 +433,17 @@ struct GlassRoundedRectModifier: ViewModifier {
                 content.glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
             }
         } else {
-            content
-                .background(MacrodexTheme.surfaceLight)
-                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            fallback(content: content)
         }
+        #else
+        fallback(content: content)
+        #endif
+    }
+
+    private func fallback(content: Content) -> some View {
+        content
+            .background(MacrodexTheme.surfaceLight)
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 }
 
@@ -435,6 +451,7 @@ struct GlassCapsuleModifier: ViewModifier {
     var interactive: Bool = false
 
     func body(content: Content) -> some View {
+        #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             if interactive {
                 content.glassEffect(.regular.interactive(), in: .capsule)
@@ -442,22 +459,37 @@ struct GlassCapsuleModifier: ViewModifier {
                 content.glassEffect(.regular, in: .capsule)
             }
         } else {
-            content
-                .background(MacrodexTheme.surfaceLight)
-                .clipShape(Capsule())
+            fallback(content: content)
         }
+        #else
+        fallback(content: content)
+        #endif
+    }
+
+    private func fallback(content: Content) -> some View {
+        content
+            .background(MacrodexTheme.surfaceLight)
+            .clipShape(Capsule())
     }
 }
 
 struct GlassCircleModifier: ViewModifier {
     func body(content: Content) -> some View {
+        #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             content.glassEffect(.regular, in: .circle)
         } else {
-            content
-                .background(MacrodexTheme.surfaceLight)
-                .clipShape(Circle())
+            fallback(content: content)
         }
+        #else
+        fallback(content: content)
+        #endif
+    }
+
+    private func fallback(content: Content) -> some View {
+        content
+            .background(MacrodexTheme.surfaceLight)
+            .clipShape(Circle())
     }
 }
 
@@ -469,11 +501,15 @@ struct GlassMorphContainer<Content: View>: View {
     @ViewBuilder var content: () -> Content
 
     var body: some View {
+        #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             GlassEffectContainer(spacing: spacing) { content() }
         } else {
             content()
         }
+        #else
+        content()
+        #endif
     }
 }
 
@@ -484,11 +520,15 @@ extension View {
             .toolbarVisibility(.visible, for: .bottomBar)
             .toolbarBackgroundVisibility(.visible, for: .bottomBar)
 
+        #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             content.tabBarMinimizeBehavior(.never)
         } else {
             content
         }
+        #else
+        content
+        #endif
     }
 
     /// Applies iOS 26's `glassEffectID` — which morphs glass between matched
@@ -496,10 +536,14 @@ extension View {
     /// `matchedGeometryEffect` so the frame still tweens on older iOS.
     @ViewBuilder
     func glassMorphID(_ id: String, in namespace: Namespace.ID) -> some View {
+        #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             self.glassEffectID(id, in: namespace)
         } else {
             self.matchedGeometryEffect(id: id, in: namespace)
         }
+        #else
+        self.matchedGeometryEffect(id: id, in: namespace)
+        #endif
     }
 }

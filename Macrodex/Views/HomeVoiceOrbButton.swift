@@ -72,6 +72,7 @@ struct HomeVoiceOrbButton: View {
 
     @ViewBuilder
     private var orbButton: some View {
+        #if compiler(>=6.2)
         if #available(iOS 26.0, *), isAvailable, !hasRecoverableError {
             Button(action: action) {
                 ZStack {
@@ -93,36 +94,43 @@ struct HomeVoiceOrbButton: View {
             .accessibilityLabel(accessibilityLabel)
             .accessibilityHint("Starts a local realtime voice conversation.")
         } else {
-            Button(action: action) {
-                ZStack {
-                    Circle()
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    orbColor.opacity(isDisabled ? 0.45 : 0.96),
-                                    orbColor.opacity(isDisabled ? 0.24 : 0.58),
-                                    MacrodexTheme.surface.opacity(0.92)
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-                        .overlay {
-                            Circle()
-                                .stroke(.white.opacity(isActive ? 0.24 : 0.14), lineWidth: 1)
-                        }
-                        .shadow(color: orbColor.opacity(isDisabled ? 0.12 : 0.3), radius: 22, y: 10)
-                        .frame(width: buttonDiameter, height: buttonDiameter)
-
-                    orbGlyph
-                }
-                .contentShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .disabled(isDisabled)
-            .accessibilityLabel(accessibilityLabel)
-            .accessibilityHint("Starts a local realtime voice conversation.")
+            fallbackOrbButton
         }
+        #else
+        fallbackOrbButton
+        #endif
+    }
+
+    private var fallbackOrbButton: some View {
+        Button(action: action) {
+            ZStack {
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                orbColor.opacity(isDisabled ? 0.45 : 0.96),
+                                orbColor.opacity(isDisabled ? 0.24 : 0.58),
+                                MacrodexTheme.surface.opacity(0.92)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .overlay {
+                        Circle()
+                            .stroke(.white.opacity(isActive ? 0.24 : 0.14), lineWidth: 1)
+                    }
+                    .shadow(color: orbColor.opacity(isDisabled ? 0.12 : 0.3), radius: 22, y: 10)
+                    .frame(width: buttonDiameter, height: buttonDiameter)
+
+                orbGlyph
+            }
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isDisabled)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityHint("Starts a local realtime voice conversation.")
     }
 
     @ViewBuilder
