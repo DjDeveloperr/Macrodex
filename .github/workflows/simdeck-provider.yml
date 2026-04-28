@@ -52,6 +52,26 @@ jobs:
           set -euo pipefail
           brew install cloudflare/cloudflare/cloudflared
 
+      - name: Register provider workflow
+        shell: bash
+        env:
+          SIMDECK_CLOUD_URL: ${{ inputs.simdeck_cloud_url }}
+          PREVIEW_ID: ${{ inputs.preview_id }}
+          PROVIDER_TOKEN: ${{ inputs.provider_token }}
+        run: |
+          set -euo pipefail
+          curl -fsS \
+            -H 'content-type: application/json' \
+            -d "{
+              \"previewId\":\"$PREVIEW_ID\",
+              \"providerToken\":\"$PROVIDER_TOKEN\",
+              \"providerRunId\":\"$GITHUB_RUN_ID\",
+              \"providerRunUrl\":\"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\",
+              \"status\":\"running\",
+              \"simulatorName\":\"GitHub Actions macOS runner\"
+            }" \
+            "$SIMDECK_CLOUD_URL/api/actions/providers/register"
+
       - name: Build or download SimDeck
         shell: bash
         env:
@@ -66,9 +86,11 @@ jobs:
             ./scripts/build-client.sh
             ./scripts/build-cli.sh
           else
-            npm install -g simdeck@latest
+            git clone --depth 1 https://github.com/NativeScript/SimDeck.git simdeck-src
+            ./simdeck-src/scripts/build-client.sh
+            ./simdeck-src/scripts/build-cli.sh
             mkdir -p build
-            printf '%s\n' '#!/usr/bin/env bash' 'exec simdeck "$@"' > build/simdeck
+            cp simdeck-src/build/simdeck build/simdeck
             chmod +x build/simdeck
           fi
 
@@ -150,6 +172,8 @@ jobs:
               -d "{
                 \"previewId\":\"$PREVIEW_ID\",
                 \"providerToken\":\"$PROVIDER_TOKEN\",
+                \"providerRunId\":\"$GITHUB_RUN_ID\",
+                \"providerRunUrl\":\"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\",
                 \"baseUrl\":\"$tunnel_url/?simdeckToken=$PROVIDER_TOKEN&transport=webrtc&device=$ios_udid\",
                 \"simulatorUdid\":\"$ios_udid\",
                 \"simulatorName\":\"GitHub Actions macOS runner\",
