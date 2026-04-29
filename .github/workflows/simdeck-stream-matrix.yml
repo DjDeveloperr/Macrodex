@@ -1,0 +1,210 @@
+name: SimDeck Stream Matrix
+
+on:
+  workflow_dispatch:
+    inputs:
+      simdeck_ref:
+        description: SimDeck branch, tag, or SHA to clone for testing
+        required: false
+        default: fix/provider-screen-adapter
+
+permissions:
+  contents: read
+
+jobs:
+  stream:
+    name: ${{ matrix.runner }} / ${{ matrix.variant }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            variant: baseline
+          - runner: macos-latest
+            variant: simulator_app
+          - runner: macos-latest
+            variant: core_restart
+          - runner: macos-latest
+            variant: ipad_runtime
+          - runner: macos-15
+            variant: simulator_app
+          - runner: macos-14
+            variant: simulator_app
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    steps:
+      - name: Check out Macrodex
+        uses: actions/checkout@v6
+        with:
+          path: Macrodex
+
+      - name: Select newest stable Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          latest_xcode="$(python3 - <<'PY'
+          import glob, os, re, subprocess
+          candidates = []
+          for app in glob.glob('/Applications/Xcode*.app'):
+              xcodebuild = os.path.join(app, 'Contents/Developer/usr/bin/xcodebuild')
+              if not os.path.exists(xcodebuild):
+                  continue
+              try:
+                  output = subprocess.check_output([xcodebuild, '-version'], text=True, stderr=subprocess.DEVNULL)
+              except Exception:
+                  continue
+              match = re.search(r'Xcode\s+(\d+(?:\.\d+)*)', output)
+              if match:
+                  version = tuple(int(part) for part in match.group(1).split('.'))
+                  prerelease = any(term in app.lower() for term in ('beta', 'rc', 'release_candidate'))
+                  candidates.append((not prerelease, version, app))
+          print(max(candidates)[2] if candidates else '/Applications/Xcode.app')
+          PY
+          )"
+          echo "Selecting Xcode at $latest_xcode"
+          sudo xcode-select -s "$latest_xcode/Contents/Developer"
+          xcodebuild -version | tee /tmp/xcode-version.txt
+          xcrun simctl list runtimes available | tee /tmp/runtimes.txt
+
+      - name: Clone SimDeck
+        shell: bash
+        env:
+          SIMDECK_REF: ${{ inputs.simdeck_ref }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${SIMDECK_REF:-main}" https://github.com/NativeScript/SimDeck.git SimDeck
+          git -C SimDeck rev-parse HEAD | tee /tmp/simdeck-head.txt
+
+      - name: Build SimDeck CLI
+        shell: bash
+        working-directory: SimDeck
+        run: |
+          set -euo pipefail
+          ./scripts/build-cli.sh
+
+      - name: Run stream probe
+        shell: bash
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          mkdir -p stream-results
+          exec > >(tee stream-results/probe.log) 2>&1
+          set -x
+
+          echo "variant=$VARIANT"
+          date
+          sw_vers
+          uname -a
+          xcodebuild -version
+          xcrun simctl list runtimes available || true
+          xcrun simctl list devices available || true
+
+          if [[ "$VARIANT" == "core_restart" ]]; then
+            pkill -TERM -f CoreSimulatorService || true
+            sleep 5
+          fi
+
+          device_filter='iPhone'
+          if [[ "$VARIANT" == "ipad_runtime" ]]; then
+            device_filter='iPad'
+          fi
+
+          udid="$(xcrun simctl list devices available --json | DEVICE_FILTER="$device_filter" python3 -c '
+          import json, os, re, sys
+          wanted = os.environ.get("DEVICE_FILTER", "iPhone")
+          data = json.load(sys.stdin)
+          choices = []
+          for runtime, devices in data.get("devices", {}).items():
+              if "iOS" not in runtime:
+                  continue
+              version = tuple(int(part) for part in re.findall(r"\d+", runtime)[:3]) or (0,)
+              for index, device in enumerate(devices):
+                  if not device.get("isAvailable"):
+                      continue
+                  name = device.get("name", "")
+                  dtype = device.get("deviceTypeIdentifier", "")
+                  if wanted not in name and wanted not in dtype:
+                      continue
+                  rank = sum(term in name for term in ("Pro", "Air", "iPhone 17", "iPhone 16", "iPhone 15", "iPad Pro"))
+                  choices.append((version, rank, -index, device["udid"], name, runtime))
+          if not choices:
+              raise SystemExit(f"No available {wanted} simulator")
+          choices.sort(reverse=True)
+          _, _, _, udid, name, runtime = choices[0]
+          print(f"Selected {name} {udid} {runtime}", file=sys.stderr)
+          print(udid)
+          ')"
+          echo "$udid" > stream-results/udid.txt
+
+          xcrun simctl shutdown "$udid" || true
+          xcrun simctl boot "$udid" || true
+          xcrun simctl bootstatus "$udid" -b
+
+          if [[ "$VARIANT" == "simulator_app" || "$VARIANT" == "ipad_runtime" ]]; then
+            open -a Simulator --args -CurrentDeviceUDID "$udid" || true
+            sleep 8
+            osascript -e 'tell application "Simulator" to activate' || true
+            sleep 2
+          fi
+
+          for i in {1..30}; do
+            if xcrun simctl io "$udid" screenshot "stream-results/simctl-$i.png" && [[ -s "stream-results/simctl-$i.png" ]]; then
+              echo "simctl screenshot ok at $i"
+              break
+            fi
+            sleep 1
+          done
+
+          mkdir -p /tmp/simdeck-empty-client
+          cd SimDeck
+          pkill -f 'simdeck serve' || true
+          RUST_BACKTRACE=1 SIMDECK_LOG=debug ./build/simdeck serve \
+            --port 4310 \
+            --bind 127.0.0.1 \
+            --access-token debug-token \
+            --client-root /tmp/simdeck-empty-client \
+            --video-codec h264-software \
+            > ../stream-results/simdeck.log 2>&1 &
+          server_pid=$!
+          echo "$server_pid" > ../stream-results/server-pid.txt
+
+          for i in {1..90}; do
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              echo "server exited before health"
+              break
+            fi
+            if curl --max-time 2 -fsS http://127.0.0.1:4310/api/health > ../stream-results/health.json; then
+              cat ../stream-results/health.json
+              break
+            fi
+            sleep 1
+          done
+
+          curl --max-time 5 -fsS -H 'x-simdeck-token: debug-token' http://127.0.0.1:4310/api/simulators > ../stream-results/simulators-before.json || true
+          cat ../stream-results/simulators-before.json || true
+
+          set +e
+          timeout 25 curl --max-time 20 -i -sS \
+            -H 'content-type: application/json' \
+            -H 'x-simdeck-token: debug-token' \
+            -d '{"type":"offer","sdp":"v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n"}' \
+            "http://127.0.0.1:4310/api/simulators/$udid/webrtc/answer" \
+            > ../stream-results/webrtc-response.txt 2>&1
+          echo $? > ../stream-results/webrtc-exit.txt
+          set -e
+
+          curl --max-time 5 -fsS -H 'x-simdeck-token: debug-token' http://127.0.0.1:4310/api/simulators > ../stream-results/simulators-after.json || true
+          cat ../stream-results/simulators-after.json || true
+
+          cp ../stream-results/* . >/dev/null 2>&1 || true
+          tail -260 ../stream-results/simdeck.log || true
+          kill "$server_pid" || true
+
+      - name: Upload stream results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stream-results-${{ matrix.runner }}-${{ matrix.variant }}
+          path: stream-results
+          retention-days: 2
