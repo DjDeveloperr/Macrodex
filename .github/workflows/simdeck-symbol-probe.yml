@@ -40,7 +40,8 @@ jobs:
           )"
           sudo xcode-select -s "$latest_xcode/Contents/Developer"
           xcodebuild -version
-          kit="$DEVELOPER_DIR/Library/PrivateFrameworks/SimulatorKit.framework/SimulatorKit"
+          developer_dir="$(xcode-select -p)"
+          kit="$developer_dir/Library/PrivateFrameworks/SimulatorKit.framework/SimulatorKit"
           echo "kit=$kit"
           nm -gU "$kit" | grep 'SimDeviceScreenAdapterC7screens' || true
           nm -gU "$kit" | grep 'SimDeviceScreenAdapter' | head -120 || true
