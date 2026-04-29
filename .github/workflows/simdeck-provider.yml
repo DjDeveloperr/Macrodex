@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       preview_id:
-        description: SimDeck Cloud preview deployment id
+        description: SimDeck Studio preview deployment id
         required: true
       provider_token:
         description: One-time provider registration token
         required: true
       simdeck_cloud_url:
-        description: SimDeck Cloud control plane URL
+        description: SimDeck Studio control plane URL
         required: true
       artifact_id:
         description: GitHub Actions artifact id containing a simulator .app
@@ -23,6 +23,13 @@ on:
         required: false
       simdeck_artifact_url:
         description: Optional URL to a prebuilt simdeck binary tarball
+        required: false
+      simdeck_repository:
+        description: GitHub repository to clone when SimDeck is not present in the target repo
+        required: false
+        default: NativeScript/SimDeck
+      simdeck_ref:
+        description: Optional SimDeck branch, tag, or SHA to check out
         required: false
 
 permissions:
@@ -67,7 +74,7 @@ jobs:
               \"providerToken\":\"$PROVIDER_TOKEN\",
               \"providerRunId\":\"$GITHUB_RUN_ID\",
               \"providerRunUrl\":\"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\",
-              \"status\":\"running\",
+              \"status\":\"building\",
               \"simulatorName\":\"GitHub Actions macOS runner\"
             }" \
             "$SIMDECK_CLOUD_URL/api/actions/providers/register"
@@ -76,6 +83,8 @@ jobs:
         shell: bash
         env:
           SIMDECK_ARTIFACT_URL: ${{ inputs.simdeck_artifact_url }}
+          SIMDECK_REPOSITORY: ${{ inputs.simdeck_repository || 'NativeScript/SimDeck' }}
+          SIMDECK_REF: ${{ inputs.simdeck_ref }}
         run: |
           set -euo pipefail
           if [[ -n "${SIMDECK_ARTIFACT_URL:-}" ]]; then
@@ -86,7 +95,16 @@ jobs:
             ./scripts/build-client.sh
             ./scripts/build-cli.sh
           else
-            git clone --depth 1 https://github.com/NativeScript/SimDeck.git simdeck-src
+            simdeck_repo="${SIMDECK_REPOSITORY:-NativeScript/SimDeck}"
+            if [[ ! "$simdeck_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+              echo "Invalid SimDeck repository: $simdeck_repo"
+              exit 1
+            fi
+            clone_args=(--depth 1)
+            if [[ -n "${SIMDECK_REF:-}" ]]; then
+              clone_args+=(--branch "$SIMDECK_REF")
+            fi
+            git clone "${clone_args[@]}" "https://github.com/$simdeck_repo.git" simdeck-src
             ./simdeck-src/scripts/build-client.sh
             ./simdeck-src/scripts/build-cli.sh
             mkdir -p build
@@ -110,21 +128,71 @@ jobs:
         run: |
           set -euo pipefail
 
+          latest_xcode="$(python3 - <<'PY'
+          import glob, os, re, subprocess
+          candidates = []
+          for app in glob.glob('/Applications/Xcode*.app'):
+              xcodebuild = os.path.join(app, 'Contents/Developer/usr/bin/xcodebuild')
+              if not os.path.exists(xcodebuild):
+                  continue
+              try:
+                  output = subprocess.check_output([xcodebuild, '-version'], text=True, stderr=subprocess.DEVNULL)
+              except Exception:
+                  continue
+              match = re.search(r'Xcode\s+(\d+(?:\.\d+)*)', output)
+              if match:
+                  version = tuple(int(part) for part in match.group(1).split('.'))
+                  candidates.append((version, app))
+          print(max(candidates)[1] if candidates else '/Applications/Xcode.app')
+          PY
+          )"
+          echo "Selecting Xcode at $latest_xcode"
+          sudo xcode-select -s "$latest_xcode/Contents/Developer"
+          xcodebuild -version
+          xcrun simctl list runtimes available
+
           ios_udid="$(xcrun simctl list devices available --json | python3 -c '
-          import json, sys
+          import json, re, sys
           data = json.load(sys.stdin)
+          choices = []
           for runtime, devices in data.get("devices", {}).items():
               if "iOS" not in runtime:
                   continue
-              for device in devices:
-                  if device.get("isAvailable"):
-                      print(device["udid"])
-                      raise SystemExit(0)
-          raise SystemExit("No available iOS simulator")
+              version = tuple(int(part) for part in re.findall(r"\d+", runtime)[:3]) or (0,)
+              for index, device in enumerate(devices):
+                  if not device.get("isAvailable"):
+                      continue
+                  name = device.get("name", "")
+                  device_type = device.get("deviceTypeIdentifier", "")
+                  if "iPhone" not in name and "iPhone" not in device_type:
+                      continue
+                  preferred = ("Pro", "iPhone 17", "iPhone 16", "iPhone 15", "iPhone 14")
+                  rank = sum(term in name for term in preferred)
+                  choices.append((version, rank, -index, device["udid"], name, runtime))
+          if not choices:
+              raise SystemExit("No available iOS iPhone simulator")
+          choices.sort(reverse=True)
+          _, _, _, udid, name, runtime = choices[0]
+          print(f"Selected simulator {name} ({udid}) on {runtime}", file=sys.stderr)
+          print(udid)
           ')"
 
+          xcrun simctl shutdown "$ios_udid" || true
           xcrun simctl boot "$ios_udid" || true
           xcrun simctl bootstatus "$ios_udid" -b
+          open -a Simulator --args -CurrentDeviceUDID "$ios_udid" || true
+          screenshot_ready=0
+          for _ in {1..60}; do
+            if xcrun simctl io "$ios_udid" screenshot /tmp/simdeck-provider-screen.png >/tmp/simdeck-screenshot.log 2>&1 && [[ -s /tmp/simdeck-provider-screen.png ]]; then
+              screenshot_ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$screenshot_ready" != "1" ]]; then
+            echo "Simulator screenshot did not become ready before provider start"
+            cat /tmp/simdeck-screenshot.log || true
+          fi
 
           app_path=""
           if [[ -d simdeck-artifact ]]; then
@@ -135,6 +203,7 @@ jobs:
           fi
           if [[ -n "${BUNDLE_ID:-}" ]]; then
             xcrun simctl launch "$ios_udid" "$BUNDLE_ID" || true
+            xcrun simctl io "$ios_udid" screenshot /tmp/simdeck-provider-app-screen.png >/tmp/simdeck-app-screenshot.log 2>&1 || cat /tmp/simdeck-app-screenshot.log || true
           fi
 
           ./build/simdeck serve \
