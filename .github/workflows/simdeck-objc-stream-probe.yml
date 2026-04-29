@@ -1,0 +1,220 @@
+name: SimDeck ObjC Stream Probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      simdeck_ref:
+        description: SimDeck branch, tag, or SHA to clone for bridge source
+        required: false
+        default: fix/provider-screen-adapter
+
+permissions:
+  contents: read
+
+jobs:
+  objc-stream:
+    name: ${{ matrix.runner }} / ${{ matrix.variant }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            variant: baseline
+          - runner: macos-latest
+            variant: simulator_app
+          - runner: macos-latest
+            variant: core_restart
+          - runner: macos-15
+            variant: simulator_app
+          - runner: macos-14
+            variant: simulator_app
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 18
+    steps:
+      - name: Select newest stable Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          latest_xcode="$(python3 - <<'PY'
+          import glob, os, re, subprocess
+          candidates = []
+          for app in glob.glob('/Applications/Xcode*.app'):
+              xcodebuild = os.path.join(app, 'Contents/Developer/usr/bin/xcodebuild')
+              if not os.path.exists(xcodebuild):
+                  continue
+              try:
+                  output = subprocess.check_output([xcodebuild, '-version'], text=True, stderr=subprocess.DEVNULL)
+              except Exception:
+                  continue
+              match = re.search(r'Xcode\s+(\d+(?:\.\d+)*)', output)
+              if match:
+                  version = tuple(int(part) for part in match.group(1).split('.'))
+                  prerelease = any(term in app.lower() for term in ('beta', 'rc', 'release_candidate'))
+                  candidates.append((not prerelease, version, app))
+          print(max(candidates)[2] if candidates else '/Applications/Xcode.app')
+          PY
+          )"
+          echo "Selecting Xcode at $latest_xcode"
+          sudo xcode-select -s "$latest_xcode/Contents/Developer"
+          xcodebuild -version
+          xcrun simctl list runtimes available
+
+      - name: Clone SimDeck bridge source
+        shell: bash
+        env:
+          SIMDECK_REF: ${{ inputs.simdeck_ref }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${SIMDECK_REF:-main}" https://github.com/NativeScript/SimDeck.git SimDeck
+          git -C SimDeck rev-parse HEAD
+
+      - name: Write ObjC probe
+        shell: bash
+        run: |
+          cat > ObjCStreamProbe.m <<'OBJC'
+          #import <Foundation/Foundation.h>
+          #import <CoreVideo/CoreVideo.h>
+          #import "SimDeck/cli/DFPrivateSimulatorDisplayBridge.h"
+
+          static void spin(double seconds) {
+              NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:seconds];
+              while ([deadline timeIntervalSinceNow] > 0) {
+                  @autoreleasepool {
+                      [[NSRunLoop mainRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+                  }
+              }
+          }
+
+          int main(int argc, const char **argv) {
+              @autoreleasepool {
+                  if (argc < 2) {
+                      fprintf(stderr, "usage: ObjCStreamProbe <udid>\n");
+                      return 64;
+                  }
+                  NSString *udid = [NSString stringWithUTF8String:argv[1]];
+                  NSError *error = nil;
+                  NSLog(@"creating bridge for %@", udid);
+                  DFPrivateSimulatorDisplayBridge *bridge = [[DFPrivateSimulatorDisplayBridge alloc] initWithUDID:udid attachDisplay:YES error:&error];
+                  if (!bridge) {
+                      NSLog(@"bridge init failed: %@", error.localizedDescription ?: @"unknown");
+                      NSData *log = [NSData dataWithContentsOfFile:@"/tmp/simdeck-private-bridge.log"];
+                      if (log) fwrite(log.bytes, 1, log.length, stderr);
+                      return 1;
+                  }
+                  NSLog(@"bridge init ok status=%@ ready=%@ size=%.0fx%.0f", bridge.displayStatus, bridge.isDisplayReady ? @"YES" : @"NO", bridge.displaySize.width, bridge.displaySize.height);
+                  for (int i = 0; i < 160; i++) {
+                      spin(0.1);
+                      CVPixelBufferRef frame = [bridge copyPixelBuffer];
+                      if (frame) {
+                          size_t width = CVPixelBufferGetWidth(frame);
+                          size_t height = CVPixelBufferGetHeight(frame);
+                          NSLog(@"FRAME_OK iteration=%d size=%zux%zu status=%@ ready=%@", i, width, height, bridge.displayStatus, bridge.isDisplayReady ? @"YES" : @"NO");
+                          CVPixelBufferRelease(frame);
+                          [bridge disconnect];
+                          return 0;
+                      }
+                      if (i % 10 == 0) {
+                          NSLog(@"waiting iteration=%d status=%@ ready=%@ size=%.0fx%.0f", i, bridge.displayStatus, bridge.isDisplayReady ? @"YES" : @"NO", bridge.displaySize.width, bridge.displaySize.height);
+                      }
+                  }
+                  NSLog(@"FRAME_TIMEOUT status=%@ ready=%@ size=%.0fx%.0f", bridge.displayStatus, bridge.isDisplayReady ? @"YES" : @"NO", bridge.displaySize.width, bridge.displaySize.height);
+                  [bridge disconnect];
+                  NSData *log = [NSData dataWithContentsOfFile:@"/tmp/simdeck-private-bridge.log"];
+                  if (log) fwrite(log.bytes, 1, log.length, stderr);
+                  return 2;
+              }
+          }
+          OBJC
+
+      - name: Compile ObjC probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang -fobjc-arc -ObjC \
+            -ISimDeck/cli \
+            ObjCStreamProbe.m SimDeck/cli/DFPrivateSimulatorDisplayBridge.m \
+            -framework Foundation -framework AppKit -framework CoreVideo -framework CoreGraphics -framework IOSurface -framework QuartzCore \
+            -o ObjCStreamProbe
+          otool -L ObjCStreamProbe
+
+      - name: Run ObjC stream probe
+        shell: bash
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          mkdir -p objc-probe-results
+          exec > >(tee objc-probe-results/probe.log) 2>&1
+          set -x
+          sw_vers
+          uname -a
+          xcodebuild -version
+          xcrun simctl list runtimes available
+          xcrun simctl list devices available
+
+          if [[ "$VARIANT" == "core_restart" ]]; then
+            pkill -TERM -f CoreSimulatorService || true
+            sleep 5
+          fi
+
+          udid="$(xcrun simctl list devices available --json | python3 -c '
+          import json, re, sys
+          data = json.load(sys.stdin)
+          choices = []
+          for runtime, devices in data.get("devices", {}).items():
+              if "iOS" not in runtime:
+                  continue
+              version = tuple(int(part) for part in re.findall(r"\d+", runtime)[:3]) or (0,)
+              for index, device in enumerate(devices):
+                  if not device.get("isAvailable"):
+                      continue
+                  name = device.get("name", "")
+                  dtype = device.get("deviceTypeIdentifier", "")
+                  if "iPhone" not in name and "iPhone" not in dtype:
+                      continue
+                  rank = sum(term in name for term in ("Pro", "iPhone 17", "iPhone 16", "iPhone 15", "iPhone 14"))
+                  choices.append((version, rank, -index, device["udid"], name, runtime))
+          if not choices:
+              raise SystemExit("No available iPhone simulator")
+          choices.sort(reverse=True)
+          _, _, _, udid, name, runtime = choices[0]
+          print(f"Selected {name} {udid} {runtime}", file=sys.stderr)
+          print(udid)
+          ')"
+          echo "$udid" | tee objc-probe-results/udid.txt
+
+          xcrun simctl shutdown "$udid" || true
+          xcrun simctl boot "$udid" || true
+          xcrun simctl bootstatus "$udid" -b
+
+          if [[ "$VARIANT" == "simulator_app" ]]; then
+            open -a Simulator --args -CurrentDeviceUDID "$udid" || true
+            sleep 8
+            osascript -e 'tell application "Simulator" to activate' || true
+            sleep 2
+          fi
+
+          for i in {1..30}; do
+            if xcrun simctl io "$udid" screenshot "objc-probe-results/simctl-$i.png" && [[ -s "objc-probe-results/simctl-$i.png" ]]; then
+              echo "simctl screenshot ok at $i"
+              break
+            fi
+            sleep 1
+          done
+
+          rm -f /tmp/simdeck-private-bridge.log
+          set +e
+          timeout 30 ./ObjCStreamProbe "$udid" 2>&1 | tee objc-probe-results/objc-stream.log
+          code=${PIPESTATUS[0]}
+          set -e
+          echo "$code" | tee objc-probe-results/exit-code.txt
+          cp /tmp/simdeck-private-bridge.log objc-probe-results/private-bridge.log 2>/dev/null || true
+          exit 0
+
+      - name: Upload ObjC probe results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: objc-probe-${{ matrix.runner }}-${{ matrix.variant }}
+          path: objc-probe-results
+          retention-days: 2
