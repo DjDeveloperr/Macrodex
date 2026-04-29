@@ -1,0 +1,47 @@
+name: SimDeck SimulatorKit Symbol Probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  symbols:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-latest, macos-15, macos-14]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 8
+    steps:
+      - name: Dump SimulatorKit screen symbols
+        shell: bash
+        run: |
+          set -euo pipefail
+          latest_xcode="$(python3 - <<'PY'
+          import glob, os, re, subprocess
+          candidates = []
+          for app in glob.glob('/Applications/Xcode*.app'):
+              xcodebuild = os.path.join(app, 'Contents/Developer/usr/bin/xcodebuild')
+              if not os.path.exists(xcodebuild):
+                  continue
+              try:
+                  output = subprocess.check_output([xcodebuild, '-version'], text=True, stderr=subprocess.DEVNULL)
+              except Exception:
+                  continue
+              match = re.search(r'Xcode\s+(\d+(?:\.\d+)*)', output)
+              if match:
+                  version = tuple(int(part) for part in match.group(1).split('.'))
+                  prerelease = any(term in app.lower() for term in ('beta', 'rc', 'release_candidate'))
+                  candidates.append((not prerelease, version, app))
+          print(max(candidates)[2] if candidates else '/Applications/Xcode.app')
+          PY
+          )"
+          sudo xcode-select -s "$latest_xcode/Contents/Developer"
+          xcodebuild -version
+          kit="$DEVELOPER_DIR/Library/PrivateFrameworks/SimulatorKit.framework/SimulatorKit"
+          echo "kit=$kit"
+          nm -gU "$kit" | grep 'SimDeviceScreenAdapterC7screens' || true
+          nm -gU "$kit" | grep 'SimDeviceScreenAdapter' | head -120 || true
+          strings "$kit" | grep 'SimDeviceScreenAdapterC7screens' || true
