@@ -142,8 +142,9 @@ jobs:
               match = re.search(r'Xcode\s+(\d+(?:\.\d+)*)', output)
               if match:
                   version = tuple(int(part) for part in match.group(1).split('.'))
-                  candidates.append((version, app))
-          print(max(candidates)[1] if candidates else '/Applications/Xcode.app')
+                  prerelease = any(term in app.lower() for term in ('beta', 'rc', 'release_candidate'))
+                  candidates.append((not prerelease, version, app))
+          print(max(candidates)[2] if candidates else '/Applications/Xcode.app')
           PY
           )"
           echo "Selecting Xcode at $latest_xcode"
