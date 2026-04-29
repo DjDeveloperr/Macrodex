@@ -204,7 +204,7 @@ jobs:
 
           rm -f /tmp/simdeck-private-bridge.log
           set +e
-          timeout 30 ./ObjCStreamProbe "$udid" 2>&1 | tee objc-probe-results/objc-stream.log
+          ./ObjCStreamProbe "$udid" 2>&1 | tee objc-probe-results/objc-stream.log
           code=${PIPESTATUS[0]}
           set -e
           echo "$code" | tee objc-probe-results/exit-code.txt
