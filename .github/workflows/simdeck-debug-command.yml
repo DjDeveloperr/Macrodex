@@ -1,0 +1,150 @@
+name: SimDeck Debug Command
+
+on:
+  workflow_dispatch:
+    inputs:
+      simdeck_ref:
+        description: SimDeck branch, tag, or SHA to clone for debugging
+        required: false
+        default: fix/provider-screen-adapter
+      prepare_simulator:
+        description: Boot and prime the newest available iPhone simulator before accepting commands
+        required: false
+        type: boolean
+        default: true
+      command_url:
+        description: Raw URL to a shell script to run repeatedly. Leave empty for idle loop.
+        required: false
+        default: ""
+      poll_seconds:
+        description: Seconds between command_url polls
+        required: false
+        default: "20"
+
+permissions:
+  contents: read
+
+jobs:
+  command:
+    runs-on: macos-latest
+    timeout-minutes: 360
+    steps:
+      - name: Check out Macrodex
+        uses: actions/checkout@v6
+        with:
+          path: Macrodex
+
+      - name: Select newest stable Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          latest_xcode="$(python3 - <<'PY'
+          import glob, os, re, subprocess
+          candidates = []
+          for app in glob.glob('/Applications/Xcode*.app'):
+              xcodebuild = os.path.join(app, 'Contents/Developer/usr/bin/xcodebuild')
+              if not os.path.exists(xcodebuild):
+                  continue
+              try:
+                  output = subprocess.check_output([xcodebuild, '-version'], text=True, stderr=subprocess.DEVNULL)
+              except Exception:
+                  continue
+              match = re.search(r'Xcode\s+(\d+(?:\.\d+)*)', output)
+              if match:
+                  version = tuple(int(part) for part in match.group(1).split('.'))
+                  prerelease = any(term in app.lower() for term in ('beta', 'rc', 'release_candidate'))
+                  candidates.append((not prerelease, version, app))
+          print(max(candidates)[2] if candidates else '/Applications/Xcode.app')
+          PY
+          )"
+          echo "Selecting Xcode at $latest_xcode"
+          sudo xcode-select -s "$latest_xcode/Contents/Developer"
+          xcodebuild -version
+          xcrun simctl list runtimes available
+
+      - name: Clone SimDeck
+        shell: bash
+        env:
+          SIMDECK_REF: ${{ inputs.simdeck_ref }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${SIMDECK_REF:-main}" https://github.com/NativeScript/SimDeck.git SimDeck
+          git -C SimDeck rev-parse --short HEAD
+
+      - name: Prepare newest iPhone simulator
+        if: ${{ inputs.prepare_simulator }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ios_udid="$(xcrun simctl list devices available --json | python3 -c '
+          import json, re, sys
+          data = json.load(sys.stdin)
+          choices = []
+          for runtime, devices in data.get("devices", {}).items():
+              if "iOS" not in runtime:
+                  continue
+              version = tuple(int(part) for part in re.findall(r"\d+", runtime)[:3]) or (0,)
+              for index, device in enumerate(devices):
+                  if not device.get("isAvailable"):
+                      continue
+                  name = device.get("name", "")
+                  device_type = device.get("deviceTypeIdentifier", "")
+                  if "iPhone" not in name and "iPhone" not in device_type:
+                      continue
+                  preferred = ("Pro", "iPhone 17", "iPhone 16", "iPhone 15", "iPhone 14")
+                  rank = sum(term in name for term in preferred)
+                  choices.append((version, rank, -index, device["udid"], name, runtime))
+          if not choices:
+              raise SystemExit("No available iOS iPhone simulator")
+          choices.sort(reverse=True)
+          _, _, _, udid, name, runtime = choices[0]
+          print(f"Selected simulator {name} ({udid}) on {runtime}", file=sys.stderr)
+          print(udid)
+          ')"
+          echo "SIMDECK_DEBUG_UDID=$ios_udid" | tee -a "$GITHUB_ENV"
+          xcrun simctl shutdown "$ios_udid" || true
+          xcrun simctl boot "$ios_udid" || true
+          xcrun simctl bootstatus "$ios_udid" -b
+          open -a Simulator --args -CurrentDeviceUDID "$ios_udid" || true
+          xcrun simctl io "$ios_udid" screenshot /tmp/simdeck-debug-screen.png || true
+          ls -lh /tmp/simdeck-debug-screen.png || true
+
+      - name: Command loop
+        shell: bash
+        env:
+          COMMAND_URL: ${{ inputs.command_url }}
+          POLL_SECONDS: ${{ inputs.poll_seconds }}
+        run: |
+          set -euo pipefail
+          echo "Workspace: $GITHUB_WORKSPACE"
+          echo "Macrodex: $GITHUB_WORKSPACE/Macrodex"
+          echo "SimDeck:  $GITHUB_WORKSPACE/SimDeck"
+          echo "UDID:     ${SIMDECK_DEBUG_UDID:-}"
+          mkdir -p "$GITHUB_WORKSPACE/debug-output"
+          last_hash=""
+          deadline=$((SECONDS + 21000))
+          while (( SECONDS < deadline )); do
+            if [[ -n "${COMMAND_URL:-}" ]]; then
+              if curl -fsSL "$COMMAND_URL" -o /tmp/simdeck-command.sh; then
+                hash="$(shasum -a 256 /tmp/simdeck-command.sh | awk '{print $1}')"
+                if [[ "$hash" != "$last_hash" ]]; then
+                  last_hash="$hash"
+                  echo "::group::Running command $hash"
+                  chmod +x /tmp/simdeck-command.sh
+                  set +e
+                  bash -lc /tmp/simdeck-command.sh
+                  code=$?
+                  set -e
+                  echo "Command exit code: $code"
+                  echo "::endgroup::"
+                else
+                  echo "No command change: $hash"
+                fi
+              else
+                echo "No command available at $COMMAND_URL"
+              fi
+            else
+              echo "No command_url configured; idle."
+            fi
+            sleep "${POLL_SECONDS:-20}"
+          done
