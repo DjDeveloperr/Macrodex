@@ -31,6 +31,14 @@ on:
       simdeck_ref:
         description: Optional SimDeck branch, tag, or SHA to check out
         required: false
+      webrtc_ice_servers:
+        description: Comma-separated ICE server URLs for browser and provider WebRTC
+        required: false
+        default: stun:stun.l.google.com:19302
+      webrtc_ice_transport_policy:
+        description: Browser ICE transport policy
+        required: false
+        default: all
 
 permissions:
   actions: read
@@ -125,6 +133,9 @@ jobs:
           PROVIDER_TOKEN: ${{ inputs.provider_token }}
           BUNDLE_ID: ${{ inputs.bundle_id }}
           SIMDECK_ALLOWED_ORIGINS: ${{ inputs.simdeck_cloud_url }}
+          SIMDECK_WEBRTC_ICE_SERVERS: ${{ inputs.webrtc_ice_servers }}
+          WEBRTC_ICE_TRANSPORT_POLICY: ${{ inputs.webrtc_ice_transport_policy }}
+          RUST_LOG: info,wtransport=warn,quinn=warn
         run: |
           set -euo pipefail
 
@@ -254,15 +265,37 @@ jobs:
             exit 1
           fi
 
+          urlencode() {
+            python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"
+          }
+          ice_query="$(urlencode "${SIMDECK_WEBRTC_ICE_SERVERS:-stun:stun.l.google.com:19302}")"
+          policy_query="$(urlencode "${WEBRTC_ICE_TRANSPORT_POLICY:-all}")"
+          provider_base_url="$tunnel_url/?simdeckToken=$PROVIDER_TOKEN&transport=webrtc&device=$ios_udid&iceServers=$ice_query&iceTransportPolicy=$policy_query"
+
+          (
+            while true; do
+              sleep 15
+              echo "::group::SimDeck diagnostics $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              curl -fsS "http://127.0.0.1:4310/api/metrics" || true
+              echo
+              echo "--- simdeck webrtc log tail ---"
+              grep -E 'WebRTC|ICE|candidate|peer connection|frame write|bootstrap' simdeck.log | tail -n 80 || true
+              echo "--- cloudflared log tail ---"
+              tail -n 20 cloudflared.log || true
+              echo "::endgroup::"
+            done
+          ) &
+          diagnostics_pid="$!"
+
           register() {
             curl -fsS \
               -H 'content-type: application/json' \
               -d "{
-                \"previewId\":\"$PREVIEW_ID\",
-                \"providerToken\":\"$PROVIDER_TOKEN\",
-                \"providerRunId\":\"$GITHUB_RUN_ID\",
-                \"providerRunUrl\":\"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\",
-                \"baseUrl\":\"$tunnel_url/?simdeckToken=$PROVIDER_TOKEN&transport=webrtc&device=$ios_udid\",
+              \"previewId\":\"$PREVIEW_ID\",
+              \"providerToken\":\"$PROVIDER_TOKEN\",
+              \"providerRunId\":\"$GITHUB_RUN_ID\",
+              \"providerRunUrl\":\"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\",
+                \"baseUrl\":\"$provider_base_url\",
                 \"simulatorUdid\":\"$ios_udid\",
                 \"simulatorName\":\"GitHub Actions macOS runner\",
                 \"runtimeName\":\"$(xcrun simctl getenv "$ios_udid" SIMULATOR_RUNTIME_VERSION 2>/dev/null || true)\",
@@ -274,6 +307,7 @@ jobs:
 
           register
           echo "SimDeck tunnel: $tunnel_url"
+          echo "SimDeck WebRTC URL: $provider_base_url"
           deadline=$((SECONDS + 1800))
           while true; do
             sleep 30
@@ -294,6 +328,9 @@ jobs:
               echo "cloudflared exited"
               cat cloudflared.log || true
               exit 1
+            fi
+            if ! kill -0 "$diagnostics_pid" 2>/dev/null; then
+              echo "diagnostics loop exited"
             fi
             register
           done
