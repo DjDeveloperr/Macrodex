@@ -141,7 +141,35 @@ jobs:
           echo "  xcrun simctl io \"${SIMDECK_DEBUG_UDID:-UDID}\" screenshot /tmp/screen.png"
 
       - name: Open SSH session
-        uses: mxschmitt/action-tmate@v3
-        timeout-minutes: 355
+        id: tmate
+        uses: mxschmitt/action-tmate/detached@v3
+        timeout-minutes: 15
         with:
           limit-access-to-actor: ${{ inputs.limit_access_to_actor }}
+
+      - name: Write SSH connection artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tmate-info
+          {
+            echo "ssh-command=${{ steps.tmate.outputs.ssh-command }}"
+            echo "ssh-address=${{ steps.tmate.outputs.ssh-address }}"
+            echo "web-url=${{ steps.tmate.outputs.web-url }}"
+            echo "run-url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "workspace=$GITHUB_WORKSPACE"
+            echo "udid=${SIMDECK_DEBUG_UDID:-}"
+          } > tmate-info/session.txt
+
+      - name: Upload SSH connection artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: simdeck-debug-ssh
+          path: tmate-info/session.txt
+          retention-days: 1
+
+      - name: Keep runner alive
+        shell: bash
+        run: |
+          echo "tmate session is ready; keeping runner alive until cancelled or timeout."
+          sleep 21000
