@@ -263,7 +263,7 @@ jobs:
             --bind 127.0.0.1 \
             --access-token "$PROVIDER_TOKEN" \
             --client-root "$PWD/client/dist" \
-            --video-codec h264-software \
+            --video-codec jpeg \
             > simdeck.log 2>&1 &
           simdeck_pid="$!"
           echo "SimDeck server pid: $simdeck_pid"
@@ -329,7 +329,7 @@ jobs:
           }
           ice_query="$(urlencode "${SIMDECK_WEBRTC_ICE_SERVERS:-stun:stun.l.google.com:19302}")"
           policy_query="$(urlencode "${WEBRTC_ICE_TRANSPORT_POLICY:-all}")"
-          provider_base_url="$tunnel_url/?simdeckToken=$PROVIDER_TOKEN&transport=webrtc&device=$ios_udid&iceServers=$ice_query&iceTransportPolicy=$policy_query"
+          provider_base_url="$tunnel_url/?simdeckToken=$PROVIDER_TOKEN&transport=webrtc-data&device=$ios_udid&iceServers=$ice_query&iceTransportPolicy=$policy_query"
 
           (
             while true; do
