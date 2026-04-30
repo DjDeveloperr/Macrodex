@@ -194,7 +194,17 @@ jobs:
           xcrun simctl shutdown "$ios_udid" || true
           xcrun simctl boot "$ios_udid" || true
           xcrun simctl bootstatus "$ios_udid" -b
-          open -a Simulator --args -CurrentDeviceUDID "$ios_udid" || true
+          /usr/bin/open -g -a Simulator --args -CurrentDeviceUDID "$ios_udid" >/tmp/simdeck-open-simulator.log 2>&1 &
+          open_pid="$!"
+          for _ in {1..20}; do
+            if ! kill -0 "$open_pid" 2>/dev/null; then
+              break
+            fi
+            sleep 0.25
+          done
+          if kill -0 "$open_pid" 2>/dev/null; then
+            echo "Simulator.app launch command is still running; continuing provider startup"
+          fi
           screenshot_ready=0
           for _ in {1..60}; do
             if xcrun simctl io "$ios_udid" screenshot /tmp/simdeck-provider-screen.png >/tmp/simdeck-screenshot.log 2>&1 && [[ -s /tmp/simdeck-provider-screen.png ]]; then
