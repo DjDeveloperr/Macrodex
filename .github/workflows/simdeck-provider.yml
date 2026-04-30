@@ -136,6 +136,8 @@ jobs:
           SIMDECK_WEBRTC_ICE_SERVERS: ${{ inputs.webrtc_ice_servers }}
           WEBRTC_ICE_TRANSPORT_POLICY: ${{ inputs.webrtc_ice_transport_policy }}
           RUST_LOG: info,wtransport=warn,quinn=warn
+          RUST_BACKTRACE: full
+          NSUnbufferedIO: YES
         run: |
           set -euo pipefail
 
@@ -227,11 +229,20 @@ jobs:
             > simdeck.log 2>&1 &
           simdeck_pid="$!"
 
+          dump_logs() {
+            echo "--- simdeck.log ---"
+            cat simdeck.log || true
+            echo "--- private bridge log ---"
+            cat /tmp/simdeck-private-bridge.log || true
+            echo "--- crash reports ---"
+            find "$HOME/Library/Logs/DiagnosticReports" -maxdepth 1 -type f \( -name 'simdeck*.ips' -o -name 'simdeck*.crash' \) -print -exec tail -n 160 {} \; || true
+          }
+
           healthy=0
           for _ in {1..120}; do
             if ! kill -0 "$simdeck_pid" 2>/dev/null; then
               echo "simdeck exited before health check passed"
-              cat simdeck.log || true
+              dump_logs
               exit 1
             fi
             if curl -fsS http://127.0.0.1:4310/api/health >/dev/null; then
@@ -280,6 +291,8 @@ jobs:
               echo
               echo "--- simdeck webrtc log tail ---"
               grep -E 'WebRTC|ICE|candidate|peer connection|frame write|bootstrap' simdeck.log | tail -n 80 || true
+              echo "--- private bridge log tail ---"
+              tail -n 80 /tmp/simdeck-private-bridge.log || true
               echo "--- cloudflared log tail ---"
               tail -n 20 cloudflared.log || true
               echo "::endgroup::"
@@ -321,7 +334,7 @@ jobs:
             fi
             if ! kill -0 "$simdeck_pid" 2>/dev/null; then
               echo "simdeck exited"
-              cat simdeck.log || true
+              dump_logs
               exit 1
             fi
             if ! kill -0 "$cloudflared_pid" 2>/dev/null; then
