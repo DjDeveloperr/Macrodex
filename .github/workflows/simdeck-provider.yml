@@ -140,6 +140,23 @@ jobs:
           NSUnbufferedIO: YES
         run: |
           set -euo pipefail
+          run_with_timeout() {
+            local limit="$1"
+            shift
+            "$@" &
+            local pid="$!"
+            local elapsed=0
+            while kill -0 "$pid" 2>/dev/null; do
+              if (( elapsed >= limit )); then
+                kill "$pid" 2>/dev/null || true
+                wait "$pid" 2>/dev/null || true
+                return 124
+              fi
+              sleep 1
+              elapsed=$((elapsed + 1))
+            done
+            wait "$pid"
+          }
 
           latest_xcode="$(python3 - <<'PY'
           import glob, os, re, subprocess
@@ -191,9 +208,12 @@ jobs:
           print(udid)
           ')"
 
+          echo "Booting simulator $ios_udid"
           xcrun simctl shutdown "$ios_udid" || true
           xcrun simctl boot "$ios_udid" || true
           xcrun simctl bootstatus "$ios_udid" -b
+          echo "Simulator bootstatus complete"
+          echo "Opening Simulator.app in background"
           /usr/bin/open -g -a Simulator --args -CurrentDeviceUDID "$ios_udid" >/tmp/simdeck-open-simulator.log 2>&1 &
           open_pid="$!"
           for _ in {1..20}; do
@@ -206,8 +226,9 @@ jobs:
             echo "Simulator.app launch command is still running; continuing provider startup"
           fi
           screenshot_ready=0
+          echo "Waiting for simulator screenshot readiness"
           for _ in {1..60}; do
-            if xcrun simctl io "$ios_udid" screenshot /tmp/simdeck-provider-screen.png >/tmp/simdeck-screenshot.log 2>&1 && [[ -s /tmp/simdeck-provider-screen.png ]]; then
+            if run_with_timeout 5 xcrun simctl io "$ios_udid" screenshot /tmp/simdeck-provider-screen.png >/tmp/simdeck-screenshot.log 2>&1 && [[ -s /tmp/simdeck-provider-screen.png ]]; then
               screenshot_ready=1
               break
             fi
@@ -223,13 +244,16 @@ jobs:
             app_path="$(find simdeck-artifact -maxdepth 6 -type d -name '*.app' | head -n 1 || true)"
           fi
           if [[ -n "$app_path" ]]; then
-            xcrun simctl install "$ios_udid" "$app_path"
+            echo "Installing simulator artifact from $app_path"
+            run_with_timeout 120 xcrun simctl install "$ios_udid" "$app_path" || echo "simctl install timed out or failed"
           fi
           if [[ -n "${BUNDLE_ID:-}" ]]; then
-            xcrun simctl launch "$ios_udid" "$BUNDLE_ID" || true
-            xcrun simctl io "$ios_udid" screenshot /tmp/simdeck-provider-app-screen.png >/tmp/simdeck-app-screenshot.log 2>&1 || cat /tmp/simdeck-app-screenshot.log || true
+            echo "Launching $BUNDLE_ID"
+            run_with_timeout 30 xcrun simctl launch "$ios_udid" "$BUNDLE_ID" || true
+            run_with_timeout 5 xcrun simctl io "$ios_udid" screenshot /tmp/simdeck-provider-app-screen.png >/tmp/simdeck-app-screenshot.log 2>&1 || cat /tmp/simdeck-app-screenshot.log || true
           fi
 
+          echo "Starting SimDeck server"
           ./build/simdeck serve \
             --port 4310 \
             --bind 127.0.0.1 \
