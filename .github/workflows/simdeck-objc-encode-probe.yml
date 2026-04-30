@@ -2,19 +2,14 @@ name: SimDeck ObjC Encode Probe
 
 on:
   workflow_dispatch:
-    inputs:
-      simdeck_ref:
-        description: SimDeck ref to test
-        required: false
-        default: fix/provider-screen-adapter
 
 permissions:
   contents: read
 
 jobs:
-  objc-encode:
+  videotoolbox-encode:
     runs-on: macos-latest
-    timeout-minutes: 15
+    timeout-minutes: 12
     steps:
       - name: Select Xcode
         shell: bash
@@ -42,178 +37,306 @@ jobs:
           sudo xcode-select -s "$latest_xcode/Contents/Developer"
           xcodebuild -version
 
-      - name: Clone SimDeck
+      - name: Write VideoToolbox probe
         shell: bash
         run: |
           set -euo pipefail
-          git clone --depth 1 --branch "${{ inputs.simdeck_ref }}" https://github.com/NativeScript/SimDeck.git SimDeck
-          git -C SimDeck rev-parse HEAD
-
-      - name: Write encode probe
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat > ObjCEncodeProbe.m <<'OBJC'
+          cat > VTEncodeProbe.m <<'OBJC'
           #import <Foundation/Foundation.h>
+          #import <CoreMedia/CoreMedia.h>
           #import <CoreVideo/CoreVideo.h>
-          #import "SimDeck/cli/DFPrivateSimulatorDisplayBridge.h"
-          #import "SimDeck/cli/XCWH264Encoder.h"
+          #import <IOSurface/IOSurface.h>
+          #import <QuartzCore/QuartzCore.h>
+          #import <VideoToolbox/VideoToolbox.h>
 
-          static void spin(double seconds) {
-              NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:seconds];
-              while ([deadline timeIntervalSinceNow] > 0) {
-                  @autoreleasepool {
-                      [[NSRunLoop mainRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+          @interface EncodeStats : NSObject
+          @property(nonatomic) NSUInteger submitted;
+          @property(nonatomic) NSUInteger output;
+          @property(nonatomic) NSUInteger failures;
+          @property(nonatomic) NSUInteger keyframes;
+          @property(nonatomic) NSUInteger totalBytes;
+          @property(nonatomic) double totalLatencyMs;
+          @property(nonatomic) double maxLatencyMs;
+          @end
+          @implementation EncodeStats
+          @end
+
+          static NSString *fourCCString(OSStatus status) {
+              UInt32 value = CFSwapInt32HostToBig((UInt32)status);
+              char chars[5] = {0};
+              memcpy(chars, &value, 4);
+              BOOL printable = YES;
+              for (int i = 0; i < 4; i++) {
+                  if (chars[i] < 32 || chars[i] > 126) printable = NO;
+              }
+              return printable ? [NSString stringWithFormat:@"%d/%s", (int)status, chars] : [NSString stringWithFormat:@"%d", (int)status];
+          }
+
+          static NSDictionary *encoderSpec(BOOL requireHardware) {
+              NSMutableDictionary *spec = [NSMutableDictionary dictionary];
+              spec[(__bridge NSString *)kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder] = @YES;
+              if (requireHardware) {
+                  spec[(__bridge NSString *)kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder] = @YES;
+              }
+              return spec;
+          }
+
+          static void fillPixelBuffer(CVPixelBufferRef pb, NSUInteger frameIndex) {
+              CVPixelBufferLockBaseAddress(pb, 0);
+              uint8_t *base = CVPixelBufferGetBaseAddress(pb);
+              size_t stride = CVPixelBufferGetBytesPerRow(pb);
+              size_t width = CVPixelBufferGetWidth(pb);
+              size_t height = CVPixelBufferGetHeight(pb);
+
+              IOSurfaceRef surface = CVPixelBufferGetIOSurface(pb);
+              if (!base && surface) {
+                  IOSurfaceLock(surface, 0, NULL);
+                  base = IOSurfaceGetBaseAddress(surface);
+                  stride = IOSurfaceGetBytesPerRow(surface);
+              }
+
+              if (base) {
+                  for (size_t y = 0; y < height; y++) {
+                      uint8_t *row = base + (y * stride);
+                      for (size_t x = 0; x < width; x++) {
+                          uint8_t *px = row + (x * 4);
+                          px[0] = (uint8_t)((x + frameIndex * 7) & 0xff);
+                          px[1] = (uint8_t)((y + frameIndex * 3) & 0xff);
+                          px[2] = (uint8_t)(((x / 8) ^ (y / 8) ^ frameIndex) & 0xff);
+                          px[3] = 255;
+                      }
                   }
               }
+
+              if (surface) IOSurfaceUnlock(surface, 0, NULL);
+              CVPixelBufferUnlockBaseAddress(pb, 0);
+          }
+
+          static CVPixelBufferRef makePixelBuffer(int width, int height, BOOL surfaceBacked) {
+              NSMutableDictionary *attrs = [@{
+                  (__bridge NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+                  (__bridge NSString *)kCVPixelBufferWidthKey: @(width),
+                  (__bridge NSString *)kCVPixelBufferHeightKey: @(height),
+                  (__bridge NSString *)kCVPixelBufferBytesPerRowAlignmentKey: @(64),
+                  (__bridge NSString *)kCVPixelBufferMetalCompatibilityKey: @YES,
+                  (__bridge NSString *)kCVPixelBufferOpenGLCompatibilityKey: @YES
+              } mutableCopy];
+              if (surfaceBacked) {
+                  attrs[(__bridge NSString *)kCVPixelBufferIOSurfacePropertiesKey] = @{};
+              }
+
+              CVPixelBufferRef pb = NULL;
+              CVReturn status = CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, (__bridge CFDictionaryRef)attrs, &pb);
+              if (status != kCVReturnSuccess) {
+                  NSLog(@"PIXEL_BUFFER_CREATE status=%d width=%d height=%d surface=%@", status, width, height, surfaceBacked ? @"yes" : @"no");
+                  return NULL;
+              }
+              return pb;
+          }
+
+          static void outputCallback(void *outputCallbackRefCon,
+                                     void *sourceFrameRefCon,
+                                     OSStatus status,
+                                     VTEncodeInfoFlags infoFlags,
+                                     CMSampleBufferRef sampleBuffer) {
+              EncodeStats *stats = (__bridge EncodeStats *)outputCallbackRefCon;
+              double start = [(__bridge NSNumber *)sourceFrameRefCon doubleValue];
+              double latencyMs = (CACurrentMediaTime() - start) * 1000.0;
+              @synchronized (stats) {
+                  if (status != noErr || !sampleBuffer || !CMSampleBufferDataIsReady(sampleBuffer)) {
+                      stats.failures += 1;
+                      NSLog(@"CALLBACK_FAIL status=%@ flags=%u", fourCCString(status), infoFlags);
+                      return;
+                  }
+                  stats.output += 1;
+                  stats.totalLatencyMs += latencyMs;
+                  stats.maxLatencyMs = MAX(stats.maxLatencyMs, latencyMs);
+
+                  CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, false);
+                  BOOL keyframe = YES;
+                  if (attachments && CFArrayGetCount(attachments) > 0) {
+                      CFDictionaryRef attachment = (CFDictionaryRef)CFArrayGetValueAtIndex(attachments, 0);
+                      keyframe = !CFDictionaryContainsKey(attachment, kCMSampleAttachmentKey_NotSync);
+                  }
+                  if (keyframe) stats.keyframes += 1;
+
+                  CMBlockBufferRef data = CMSampleBufferGetDataBuffer(sampleBuffer);
+                  if (data) stats.totalBytes += CMBlockBufferGetDataLength(data);
+              }
+          }
+
+          static void setProperty(VTCompressionSessionRef session, CFStringRef key, CFTypeRef value, NSString *name) {
+              OSStatus status = VTSessionSetProperty(session, key, value);
+              if (status != noErr) NSLog(@"SET_PROPERTY_FAIL %@ status=%@", name, fourCCString(status));
+          }
+
+          static void runCase(NSString *name, CMVideoCodecType codec, int width, int height, BOOL surfaceBacked, BOOL requireHardware) {
+              NSLog(@"CASE_START name=%@ codec=%@ width=%d height=%d surface=%@ requireHardware=%@",
+                    name,
+                    codec == kCMVideoCodecType_HEVC ? @"hevc" : @"h264",
+                    width,
+                    height,
+                    surfaceBacked ? @"yes" : @"no",
+                    requireHardware ? @"yes" : @"no");
+
+              EncodeStats *stats = [EncodeStats new];
+              VTCompressionSessionRef session = NULL;
+              OSStatus createStatus = VTCompressionSessionCreate(kCFAllocatorDefault,
+                                                                 width,
+                                                                 height,
+                                                                 codec,
+                                                                 (__bridge CFDictionaryRef)encoderSpec(requireHardware),
+                                                                 NULL,
+                                                                 NULL,
+                                                                 outputCallback,
+                                                                 (__bridge void *)stats,
+                                                                 &session);
+              NSLog(@"SESSION_CREATE name=%@ status=%@", name, fourCCString(createStatus));
+              if (createStatus != noErr || !session) return;
+
+              int fps = 60;
+              int frames = 240;
+              int64_t bitrate = MIN((int64_t)width * (int64_t)height * 10LL, 45000000LL);
+              setProperty(session, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue, @"RealTime");
+              setProperty(session, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse, @"AllowFrameReordering");
+              setProperty(session, kVTCompressionPropertyKey_ExpectedFrameRate, (__bridge CFTypeRef)@(fps), @"ExpectedFrameRate");
+              setProperty(session, kVTCompressionPropertyKey_MaxKeyFrameInterval, (__bridge CFTypeRef)@(fps), @"MaxKeyFrameInterval");
+              setProperty(session, kVTCompressionPropertyKey_AverageBitRate, (__bridge CFTypeRef)@(bitrate), @"AverageBitRate");
+              if (@available(macOS 11.0, *)) {
+                  setProperty(session, kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, kCFBooleanTrue, @"PrioritizeEncodingSpeedOverQuality");
+              }
+              if (codec == kCMVideoCodecType_HEVC) {
+                  setProperty(session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_HEVC_Main_AutoLevel, @"ProfileLevel");
+              } else {
+                  setProperty(session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_High_AutoLevel, @"ProfileLevel");
+              }
+
+              OSStatus prepareStatus = VTCompressionSessionPrepareToEncodeFrames(session);
+              NSLog(@"SESSION_PREPARE name=%@ status=%@", name, fourCCString(prepareStatus));
+
+              CFTypeRef usingHW = NULL;
+              OSStatus hwStatus = VTSessionCopyProperty(session, kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder, kCFAllocatorDefault, &usingHW);
+              NSLog(@"USING_HW name=%@ status=%@ value=%@", name, fourCCString(hwStatus), usingHW ? (__bridge id)usingHW : @"<nil>");
+              if (usingHW) CFRelease(usingHW);
+
+              CVPixelBufferRef pb = makePixelBuffer(width, height, surfaceBacked);
+              if (!pb) {
+                  VTCompressionSessionInvalidate(session);
+                  CFRelease(session);
+                  return;
+              }
+
+              double start = CACurrentMediaTime();
+              for (int i = 0; i < frames; i++) {
+                  @autoreleasepool {
+                      fillPixelBuffer(pb, (NSUInteger)i);
+                      CMTime pts = CMTimeMake(i, fps);
+                      NSDictionary *frameProps = i == 0 ? @{(__bridge NSString *)kVTEncodeFrameOptionKey_ForceKeyFrame: @YES} : @{};
+                      NSNumber *submittedAt = @(CACurrentMediaTime());
+                      OSStatus encodeStatus = VTCompressionSessionEncodeFrame(session,
+                                                                              pb,
+                                                                              pts,
+                                                                              kCMTimeInvalid,
+                                                                              (__bridge CFDictionaryRef)frameProps,
+                                                                              (__bridge_retained void *)submittedAt,
+                                                                              NULL);
+                      stats.submitted += 1;
+                      if (encodeStatus != noErr) {
+                          stats.failures += 1;
+                          NSLog(@"ENCODE_FAIL name=%@ frame=%d status=%@", name, i, fourCCString(encodeStatus));
+                      }
+                  }
+              }
+              OSStatus completeStatus = VTCompressionSessionCompleteFrames(session, kCMTimeInvalid);
+              double elapsed = CACurrentMediaTime() - start;
+
+              double deadline = CACurrentMediaTime() + 5.0;
+              while (CACurrentMediaTime() < deadline) {
+                  @synchronized (stats) {
+                      if (stats.output + stats.failures >= stats.submitted) break;
+                  }
+                  [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+              }
+
+              @synchronized (stats) {
+                  double avgLatency = stats.output ? stats.totalLatencyMs / (double)stats.output : 0.0;
+                  double fpsActual = elapsed > 0.0 ? (double)stats.output / elapsed : 0.0;
+                  NSLog(@"CASE_RESULT name=%@ complete=%@ submitted=%lu output=%lu failures=%lu keyframes=%lu bytes=%lu elapsedMs=%.1f fps=%.2f avgCallbackMs=%.2f maxCallbackMs=%.2f",
+                        name,
+                        fourCCString(completeStatus),
+                        (unsigned long)stats.submitted,
+                        (unsigned long)stats.output,
+                        (unsigned long)stats.failures,
+                        (unsigned long)stats.keyframes,
+                        (unsigned long)stats.totalBytes,
+                        elapsed * 1000.0,
+                        fpsActual,
+                        avgLatency,
+                        stats.maxLatencyMs);
+              }
+
+              CVPixelBufferRelease(pb);
+              VTCompressionSessionInvalidate(session);
+              CFRelease(session);
           }
 
           int main(int argc, const char **argv) {
               @autoreleasepool {
-                  if (argc < 2) {
-                      fprintf(stderr, "usage: ObjCEncodeProbe <udid>\n");
-                      return 64;
-                  }
-                  NSString *udid = [NSString stringWithUTF8String:argv[1]];
-                  __block NSUInteger outputs = 0;
-                  XCWH264Encoder *encoder = [[XCWH264Encoder alloc] initWithOutputHandler:^(NSData *sampleData,
-                                                                                           uint64_t timestampUs,
-                                                                                           BOOL isKeyFrame,
-                                                                                           NSString *codec,
-                                                                                           NSData *decoderConfig,
-                                                                                           CGSize dimensions) {
-                      (void)timestampUs;
-                      (void)decoderConfig;
-                      outputs += 1;
-                      NSLog(@"ENCODE_OK output=%lu bytes=%lu key=%@ codec=%@ size=%.0fx%.0f",
-                            (unsigned long)outputs,
-                            (unsigned long)sampleData.length,
-                            isKeyFrame ? @"YES" : @"NO",
-                            codec ?: @"nil",
-                            dimensions.width,
-                            dimensions.height);
-                  }];
-
-                  NSError *error = nil;
-                  NSLog(@"creating bridge for %@", udid);
-                  DFPrivateSimulatorDisplayBridge *bridge = [[DFPrivateSimulatorDisplayBridge alloc] initWithUDID:udid attachDisplay:YES error:&error];
-                  if (!bridge) {
-                      NSLog(@"bridge init failed: %@", error.localizedDescription ?: @"unknown");
-                      NSData *log = [NSData dataWithContentsOfFile:@"/tmp/simdeck-private-bridge.log"];
-                      if (log) fwrite(log.bytes, 1, log.length, stderr);
-                      return 1;
-                  }
-
-                  for (int i = 0; i < 200; i++) {
-                      spin(0.1);
-                      CVPixelBufferRef frame = [bridge copyPixelBuffer];
-                      if (frame) {
-                          NSLog(@"FRAME_OK iteration=%d size=%zux%zu status=%@ ready=%@",
-                                i,
-                                CVPixelBufferGetWidth(frame),
-                                CVPixelBufferGetHeight(frame),
-                                bridge.displayStatus,
-                                bridge.isDisplayReady ? @"YES" : @"NO");
-                          [encoder requestKeyFrame];
-                          for (int j = 0; j < 12; j++) {
-                              [encoder encodePixelBuffer:frame];
-                              spin(0.1);
-                              if (outputs > 0) {
-                                  CVPixelBufferRelease(frame);
-                                  [bridge disconnect];
-                                  [encoder invalidate];
-                                  return 0;
-                              }
-                          }
-                          CVPixelBufferRelease(frame);
-                      }
-                      if (i % 10 == 0) {
-                          NSLog(@"waiting iteration=%d status=%@ ready=%@ size=%.0fx%.0f outputs=%lu",
-                                i,
-                                bridge.displayStatus,
-                                bridge.isDisplayReady ? @"YES" : @"NO",
-                                bridge.displaySize.width,
-                                bridge.displaySize.height,
-                                (unsigned long)outputs);
-                      }
-                  }
-
-                  NSLog(@"ENCODE_TIMEOUT status=%@ ready=%@ size=%.0fx%.0f outputs=%lu",
-                        bridge.displayStatus,
-                        bridge.isDisplayReady ? @"YES" : @"NO",
-                        bridge.displaySize.width,
-                        bridge.displaySize.height,
-                        (unsigned long)outputs);
-                  [bridge disconnect];
-                  [encoder invalidate];
-                  NSData *log = [NSData dataWithContentsOfFile:@"/tmp/simdeck-private-bridge.log"];
-                  if (log) fwrite(log.bytes, 1, log.length, stderr);
-                  return 2;
+                  NSLog(@"VTEncodeProbe start");
+                  runCase(@"h264-hw-720p-iosurface", kCMVideoCodecType_H264, 1280, 720, YES, YES);
+                  runCase(@"h264-auto-720p-iosurface", kCMVideoCodecType_H264, 1280, 720, YES, NO);
+                  runCase(@"hevc-hw-720p-iosurface", kCMVideoCodecType_HEVC, 1280, 720, YES, YES);
+                  runCase(@"hevc-auto-720p-iosurface", kCMVideoCodecType_HEVC, 1280, 720, YES, NO);
+                  runCase(@"h264-hw-17pro-iosurface", kCMVideoCodecType_H264, 1206, 2622, YES, YES);
+                  runCase(@"h264-auto-17pro-iosurface", kCMVideoCodecType_H264, 1206, 2622, YES, NO);
+                  runCase(@"hevc-hw-17pro-iosurface", kCMVideoCodecType_HEVC, 1206, 2622, YES, YES);
+                  runCase(@"hevc-auto-17pro-iosurface", kCMVideoCodecType_HEVC, 1206, 2622, YES, NO);
+                  runCase(@"h264-hw-17pro-memory", kCMVideoCodecType_H264, 1206, 2622, NO, YES);
+                  runCase(@"h264-auto-17pro-memory", kCMVideoCodecType_H264, 1206, 2622, NO, NO);
+                  NSLog(@"VTEncodeProbe done");
               }
+              return 0;
           }
           OBJC
 
-      - name: Compile encode probe
+      - name: Compile VideoToolbox probe
         shell: bash
         run: |
           set -euo pipefail
-          clang -fobjc-arc -ObjC \
-            ObjCEncodeProbe.m \
-            SimDeck/cli/DFPrivateSimulatorDisplayBridge.m \
-            SimDeck/cli/XCWH264Encoder.m \
-            -framework Foundation -framework AppKit -framework CoreVideo -framework CoreGraphics -framework IOSurface -framework QuartzCore -framework VideoToolbox -framework CoreMedia \
-            -o ObjCEncodeProbe
+          clang -fobjc-arc VTEncodeProbe.m \
+            -framework Foundation \
+            -framework CoreMedia \
+            -framework CoreVideo \
+            -framework IOSurface \
+            -framework QuartzCore \
+            -framework VideoToolbox \
+            -o VTEncodeProbe
 
-      - name: Boot simulator and run encode probe
+      - name: Run VideoToolbox probe
         shell: bash
         env:
-          SIMDECK_VIDEO_CODEC: h264-software
           NSUnbufferedIO: YES
         run: |
-          set -euo pipefail
-          exec > >(tee objc-encode-probe.log) 2>&1
-          udid="$(xcrun simctl list devices available --json | python3 -c '
-          import json, re, sys
-          data = json.load(sys.stdin)
-          choices = []
-          for runtime, devices in data.get("devices", {}).items():
-              if "iOS" not in runtime:
-                  continue
-              version = tuple(int(part) for part in re.findall(r"\d+", runtime)[:3]) or (0,)
-              for index, device in enumerate(devices):
-                  if not device.get("isAvailable"):
-                      continue
-                  name = device.get("name", "")
-                  device_type = device.get("deviceTypeIdentifier", "")
-                  if "iPhone" not in name and "iPhone" not in device_type:
-                      continue
-                  rank = sum(term in name for term in ("Pro", "iPhone 17", "iPhone 16", "iPhone 15", "iPhone 14"))
-                  choices.append((version, rank, -index, device["udid"], name, runtime))
-          if not choices:
-              raise SystemExit("No available iOS iPhone simulator")
-          choices.sort(reverse=True)
-          _, _, _, udid, name, runtime = choices[0]
-          print(f"Selected simulator {name} ({udid}) on {runtime}", file=sys.stderr)
-          print(udid)
-          ')"
-          xcrun simctl shutdown "$udid" || true
-          xcrun simctl boot "$udid" || true
-          xcrun simctl bootstatus "$udid" -b
-          open -a Simulator --args -CurrentDeviceUDID "$udid" || true
-          for i in {1..60}; do
-            if xcrun simctl io "$udid" screenshot "/tmp/simdeck-encode-$i.png" && [[ -s "/tmp/simdeck-encode-$i.png" ]]; then
-              echo "simctl screenshot ok at $i"
-              break
-            fi
-            sleep 1
-          done
-          ./ObjCEncodeProbe "$udid"
+          set -uo pipefail
+          exec > >(tee vt-encode-probe.log) 2>&1
+          echo "== Host =="
+          sw_vers
+          uname -a
+          sysctl machdep.cpu.brand_string || true
+          system_profiler SPHardwareDataType SPDisplaysDataType || true
+          echo "== Xcode =="
+          xcodebuild -version
+          echo "== Probe =="
+          ./VTEncodeProbe
+          status=$?
+          echo "VTEncodeProbe exit=$status"
+          exit "$status"
 
-      - name: Upload encode probe logs
+      - name: Upload VideoToolbox probe logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: objc-encode-probe
+          name: vt-encode-probe
           path: |
-            objc-encode-probe.log
-            /tmp/simdeck-private-bridge.log
+            vt-encode-probe.log
+            ~/Library/Logs/DiagnosticReports/VTEncodeProbe*
