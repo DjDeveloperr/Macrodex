@@ -132,7 +132,7 @@ jobs:
           PREVIEW_ID: ${{ inputs.preview_id }}
           PROVIDER_TOKEN: ${{ inputs.provider_token }}
           BUNDLE_ID: ${{ inputs.bundle_id }}
-          SIMDECK_ALLOWED_ORIGINS: ${{ inputs.simdeck_cloud_url }},http://127.0.0.1:4310,http://127.0.0.1:4312,http://localhost:4310,http://localhost:4312
+          SIMDECK_ALLOWED_ORIGINS: "*"
           SIMDECK_WEBRTC_ICE_SERVERS: ${{ inputs.webrtc_ice_servers }}
           WEBRTC_ICE_TRANSPORT_POLICY: ${{ inputs.webrtc_ice_transport_policy }}
           RUST_LOG: info,wtransport=warn,quinn=warn
