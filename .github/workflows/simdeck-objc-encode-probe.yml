@@ -335,12 +335,26 @@ jobs:
           sw_vers
           uname -a
           sysctl machdep.cpu.brand_string || true
-          system_profiler SPHardwareDataType SPDisplaysDataType || true
           echo "== Xcode =="
           xcodebuild -version
           echo "== Probe =="
-          ./VTEncodeProbe
-          status=$?
+          ./VTEncodeProbe &
+          probe_pid=$!
+          for i in {1..180}; do
+            if ! kill -0 "$probe_pid" 2>/dev/null; then
+              wait "$probe_pid"
+              status=$?
+              echo "VTEncodeProbe exit=$status"
+              exit "$status"
+            fi
+            sleep 1
+          done
+          echo "VTEncodeProbe timed out after 180s"
+          kill -QUIT "$probe_pid" || true
+          sleep 2
+          kill -TERM "$probe_pid" || true
+          wait "$probe_pid" || true
+          status=124
           echo "VTEncodeProbe exit=$status"
           exit "$status"
 
