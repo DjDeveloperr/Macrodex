@@ -264,6 +264,7 @@ jobs:
             --access-token "$PROVIDER_TOKEN" \
             --client-root "$PWD/client/dist" \
             --video-codec h264-software \
+            --low-latency \
             > simdeck.log 2>&1 &
           simdeck_pid="$!"
           echo "SimDeck server pid: $simdeck_pid"
