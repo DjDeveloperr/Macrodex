@@ -197,8 +197,11 @@ jobs:
                   device_type = device.get("deviceTypeIdentifier", "")
                   if "iPhone" not in name and "iPhone" not in device_type:
                       continue
-                  preferred = ("Pro", "iPhone 17", "iPhone 16", "iPhone 15", "iPhone 14")
-                  rank = sum(term in name for term in preferred)
+                  preferred = ("iPhone 17", "iPhone 16", "iPhone 15", "iPhone 14")
+                  if name in preferred:
+                      rank = 100 - preferred.index(name)
+                  else:
+                      rank = max((50 - index for index, term in enumerate(preferred) if name.startswith(term)), default=0)
                   choices.append((version, rank, -index, device["udid"], name, runtime))
           if not choices:
               raise SystemExit("No available iOS iPhone simulator")
