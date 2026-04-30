@@ -269,7 +269,7 @@ jobs:
             echo "--- private bridge log ---"
             cat /tmp/simdeck-private-bridge.log || true
             echo "--- crash reports ---"
-            find "$HOME/Library/Logs/DiagnosticReports" -maxdepth 1 -type f \( -name 'simdeck*.ips' -o -name 'simdeck*.crash' \) -print -exec tail -n 160 {} \; || true
+            find "$HOME/Library/Logs/DiagnosticReports" -maxdepth 1 -type f \( -name 'simdeck*.ips' -o -name 'simdeck*.crash' \) -print -exec cat {} \; || true
           }
 
           healthy=0
@@ -381,3 +381,20 @@ jobs:
             fi
             register
           done
+
+      - name: Upload SimDeck provider diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simdeck-provider-diagnostics
+          path: |
+            simdeck.log
+            cloudflared.log
+            /tmp/simdeck-private-bridge.log
+            /tmp/simdeck-open-simulator.log
+            /tmp/simdeck-screenshot.log
+            /tmp/simdeck-app-screenshot.log
+            /tmp/simdeck-provider-screen.png
+            /tmp/simdeck-provider-app-screen.png
+            ~/Library/Logs/DiagnosticReports/simdeck*.ips
+            ~/Library/Logs/DiagnosticReports/simdeck*.crash
