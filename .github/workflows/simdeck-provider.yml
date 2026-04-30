@@ -211,7 +211,11 @@ jobs:
           echo "Booting simulator $ios_udid"
           xcrun simctl shutdown "$ios_udid" || true
           xcrun simctl boot "$ios_udid" || true
-          xcrun simctl bootstatus "$ios_udid" -b
+          if ! run_with_timeout 180 xcrun simctl bootstatus "$ios_udid" -b; then
+            echo "simctl bootstatus timed out"
+            xcrun simctl list devices "$ios_udid" || true
+            exit 1
+          fi
           echo "Simulator bootstatus complete"
           echo "Opening Simulator.app in background"
           /usr/bin/open -g -a Simulator --args -CurrentDeviceUDID "$ios_udid" >/tmp/simdeck-open-simulator.log 2>&1 &
@@ -262,6 +266,7 @@ jobs:
             --video-codec h264-software \
             > simdeck.log 2>&1 &
           simdeck_pid="$!"
+          echo "SimDeck server pid: $simdeck_pid"
 
           dump_logs() {
             echo "--- simdeck.log ---"
