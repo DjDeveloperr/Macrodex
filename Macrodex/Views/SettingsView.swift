@@ -6,9 +6,6 @@ struct DrawerSettingsView: View {
     @State private var isWorking = false
     @State private var authError: String?
     @State private var healthKitStatus = codex_healthkit_status_summary() ?? "HealthKit status unavailable"
-    @State private var googleAPIKey = ""
-    @State private var hasGoogleAIKey = GoogleAIApiKeyStore.shared.hasStoredKey
-    @State private var isSavingGoogleAIKey = false
     @AppStorage("autoArchiveChatsAfter14Days") private var legacyAutoArchiveChatsAfter14Days = true
     @AppStorage("autoArchiveChatsAfterDays") private var autoArchiveChatsAfterDays = 14
     @AppStorage("fastMode") private var fastMode = false
@@ -34,7 +31,6 @@ struct DrawerSettingsView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     accountCard
                     modelDefaultsCard
-                    googleAICard
                     databaseCard
                     healthKitCard
                     chatManagementCard
@@ -223,58 +219,6 @@ struct DrawerSettingsView: View {
                     .macrodexFont(.caption)
                     .foregroundColor(MacrodexTheme.danger)
             }
-        }
-    }
-
-    @ViewBuilder
-    private var googleAICard: some View {
-        drawerCard {
-            drawerCardHeader(title: "Google AI", systemImage: "sparkles")
-
-            drawerRow("Status", value: hasGoogleAIKey ? "Saved" : "Not configured")
-
-            SecureField("AIza...", text: $googleAPIKey)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .font(.system(.footnote, design: .monospaced))
-                .padding(.horizontal, 12)
-                .frame(height: 42)
-                .background(MacrodexTheme.surfaceLight.opacity(0.72), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-
-            HStack(spacing: 10) {
-                Button {
-                    Task { await saveGoogleAIKey() }
-                } label: {
-                    HStack(spacing: 8) {
-                        if isSavingGoogleAIKey {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                        Text(isSavingGoogleAIKey ? "Saving" : "Save Key")
-                            .macrodexFont(.subheadline, weight: .semibold)
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(MacrodexTheme.accent)
-                .disabled(isSavingGoogleAIKey || googleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                Button(role: .destructive) {
-                    Task { await clearGoogleAIKey() }
-                } label: {
-                    Image(systemName: "trash")
-                        .font(.system(size: 14, weight: .semibold))
-                        .frame(width: 30, height: 30)
-                }
-                .buttonStyle(.borderless)
-                .foregroundStyle(MacrodexTheme.danger)
-                .disabled(!hasGoogleAIKey || isSavingGoogleAIKey)
-                .accessibilityLabel("Clear Google AI key")
-            }
-
-            Text("Enables Gemini models in the model picker. The key stays in this device's Keychain.")
-                .macrodexFont(.caption)
-                .foregroundColor(MacrodexTheme.textSecondary)
         }
     }
 
@@ -550,47 +494,6 @@ struct DrawerSettingsView: View {
         }
     }
 
-    private func saveGoogleAIKey() async {
-        guard let server, server.isLocal else {
-            authError = "Google AI keys are only available for the local server."
-            return
-        }
-        let trimmed = googleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-
-        isSavingGoogleAIKey = true
-        defer { isSavingGoogleAIKey = false }
-
-        do {
-            authError = nil
-            try GoogleAIApiKeyStore.shared.save(trimmed)
-            hasGoogleAIKey = GoogleAIApiKeyStore.shared.hasStoredKey
-            googleAPIKey = ""
-            _ = try await appModel.client.refreshAccount(
-                serverId: server.serverId,
-                params: AppRefreshAccountRequest(refreshToken: false)
-            )
-            await appModel.refreshSnapshot()
-        } catch {
-            authError = error.localizedDescription
-        }
-    }
-
-    private func clearGoogleAIKey() async {
-        isSavingGoogleAIKey = true
-        defer { isSavingGoogleAIKey = false }
-
-        do {
-            authError = nil
-            try GoogleAIApiKeyStore.shared.clear()
-            hasGoogleAIKey = false
-            googleAPIKey = ""
-            try await appModel.restartLocalServer()
-            await appModel.refreshSnapshot()
-        } catch {
-            authError = error.localizedDescription
-        }
-    }
 }
 
 struct SettingsInfoRow: View {

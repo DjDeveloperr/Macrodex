@@ -7,8 +7,6 @@ struct ChatGPTLoginWallView: View {
     @State private var isWorking = false
     @State private var authError: String?
     @State private var isRestartingLocalServer = false
-    @State private var googleAPIKey = ""
-    @State private var isSavingGoogleKey = false
 
     private var localServer: AppServerSnapshot? {
         appModel.snapshot?.servers.first(where: \.isLocal)
@@ -47,7 +45,7 @@ struct ChatGPTLoginWallView: View {
                         .font(.system(.largeTitle, design: .default, weight: .semibold))
                         .foregroundStyle(.primary)
 
-                    Text("Sign in with ChatGPT or add a Google AI key to use Macrodex on your iPhone")
+                    Text("Sign in with ChatGPT to use Macrodex on your iPhone")
                         .font(.body)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -75,38 +73,6 @@ struct ChatGPTLoginWallView: View {
                 .disabled(isWorking || !isLocalServerConnected)
                 .opacity(isLocalServerConnected ? 1 : 0.45)
                 .accessibilityLabel("Sign in with ChatGPT")
-
-                VStack(spacing: 10) {
-                    SecureField("Google AI API key", text: $googleAPIKey)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.system(.body, design: .monospaced))
-                        .padding(.horizontal, 14)
-                        .frame(height: 46)
-                        .background(Color(uiColor: .secondarySystemBackground), in: Capsule())
-
-                    Button {
-                        Task { await saveGoogleKey() }
-                    } label: {
-                        HStack(spacing: 8) {
-                            if isSavingGoogleKey {
-                                ProgressView()
-                                    .tint(buttonForeground)
-                                    .controlSize(.small)
-                            }
-                            Text(isSavingGoogleKey ? "Saving..." : "Use Google AI")
-                                .font(.body.weight(.semibold))
-                        }
-                        .foregroundStyle(buttonForeground)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 48)
-                        .background(buttonBackground.opacity(0.9), in: Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(isSavingGoogleKey || !isLocalServerConnected || googleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .opacity(isLocalServerConnected ? 1 : 0.45)
-                    .accessibilityLabel("Use Google AI")
-                }
 
                 if let authError {
                     Text(authError)
@@ -197,30 +163,6 @@ struct ChatGPTLoginWallView: View {
         }
     }
 
-    private func saveGoogleKey() async {
-        guard let localServer else {
-            authError = "The local server is not ready yet."
-            return
-        }
-        let trimmed = googleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-
-        isSavingGoogleKey = true
-        defer { isSavingGoogleKey = false }
-
-        do {
-            authError = nil
-            try GoogleAIApiKeyStore.shared.save(trimmed)
-            _ = try await appModel.client.refreshAccount(
-                serverId: localServer.serverId,
-                params: AppRefreshAccountRequest(refreshToken: false)
-            )
-            googleAPIKey = ""
-            await appModel.refreshSnapshot()
-        } catch {
-            authError = error.localizedDescription
-        }
-    }
 }
 
 #if DEBUG
