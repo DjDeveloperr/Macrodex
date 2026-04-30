@@ -291,6 +291,15 @@ jobs:
             exit 1
           fi
 
+          echo "Prewarming private simulator stream"
+          if ! run_with_timeout 60 curl -fsS -X POST "http://127.0.0.1:4310/api/simulators/$ios_udid/refresh?simdeckToken=$PROVIDER_TOKEN"; then
+            echo "SimDeck private stream prewarm failed"
+            dump_logs
+            exit 1
+          fi
+          echo
+          echo "Private simulator stream prewarmed"
+
           cloudflared tunnel --url http://127.0.0.1:4310 \
             > cloudflared.log 2>&1 &
           cloudflared_pid="$!"
