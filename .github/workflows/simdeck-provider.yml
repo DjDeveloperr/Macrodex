@@ -35,6 +35,12 @@ on:
         description: Comma-separated ICE server URLs for browser and provider WebRTC
         required: false
         default: stun:stun.l.google.com:19302
+      webrtc_ice_username:
+        description: Optional TURN username
+        required: false
+      webrtc_ice_credential:
+        description: Optional TURN credential
+        required: false
       webrtc_ice_transport_policy:
         description: Browser ICE transport policy
         required: false
@@ -134,7 +140,9 @@ jobs:
           BUNDLE_ID: ${{ inputs.bundle_id }}
           SIMDECK_ALLOWED_ORIGINS: "*"
           SIMDECK_WEBRTC_ICE_SERVERS: ${{ inputs.webrtc_ice_servers }}
-          WEBRTC_ICE_TRANSPORT_POLICY: ${{ inputs.webrtc_ice_transport_policy }}
+          SIMDECK_WEBRTC_ICE_USERNAME: ${{ inputs.webrtc_ice_username }}
+          SIMDECK_WEBRTC_ICE_CREDENTIAL: ${{ inputs.webrtc_ice_credential }}
+          SIMDECK_WEBRTC_ICE_TRANSPORT_POLICY: ${{ inputs.webrtc_ice_transport_policy }}
           RUST_LOG: info,wtransport=warn,quinn=warn
           RUST_BACKTRACE: full
           NSUnbufferedIO: YES
@@ -328,12 +336,7 @@ jobs:
             exit 1
           fi
 
-          urlencode() {
-            python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"
-          }
-          ice_query="$(urlencode "${SIMDECK_WEBRTC_ICE_SERVERS:-stun:stun.l.google.com:19302}")"
-          policy_query="$(urlencode "${WEBRTC_ICE_TRANSPORT_POLICY:-all}")"
-          provider_base_url="$tunnel_url/?simdeckToken=$PROVIDER_TOKEN&transport=webrtc&device=$ios_udid&iceServers=$ice_query&iceTransportPolicy=$policy_query"
+          provider_base_url="$tunnel_url/?simdeckToken=$PROVIDER_TOKEN&device=$ios_udid"
 
           (
             while true; do
