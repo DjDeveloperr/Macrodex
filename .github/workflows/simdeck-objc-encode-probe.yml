@@ -140,7 +140,8 @@ jobs:
                                      VTEncodeInfoFlags infoFlags,
                                      CMSampleBufferRef sampleBuffer) {
               EncodeStats *stats = (__bridge EncodeStats *)outputCallbackRefCon;
-              double start = [(__bridge NSNumber *)sourceFrameRefCon doubleValue];
+              NSNumber *submittedAt = sourceFrameRefCon ? CFBridgingRelease(sourceFrameRefCon) : nil;
+              double start = submittedAt ? submittedAt.doubleValue : CACurrentMediaTime();
               double latencyMs = (CACurrentMediaTime() - start) * 1000.0;
               @synchronized (stats) {
                   if (status != noErr || !sampleBuffer || !CMSampleBufferDataIsReady(sampleBuffer)) {
@@ -195,7 +196,7 @@ jobs:
               if (createStatus != noErr || !session) return;
 
               int fps = 60;
-              int frames = 240;
+              int frames = 180;
               int64_t bitrate = MIN((int64_t)width * (int64_t)height * 10LL, 45000000LL);
               setProperty(session, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue, @"RealTime");
               setProperty(session, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse, @"AllowFrameReordering");
@@ -219,8 +220,19 @@ jobs:
               NSLog(@"USING_HW name=%@ status=%@ value=%@", name, fourCCString(hwStatus), usingHW ? (__bridge id)usingHW : @"<nil>");
               if (usingHW) CFRelease(usingHW);
 
-              CVPixelBufferRef pb = makePixelBuffer(width, height, surfaceBacked);
-              if (!pb) {
+              const int bufferCount = 4;
+              CVPixelBufferRef buffers[bufferCount];
+              BOOL buffersOK = YES;
+              for (int i = 0; i < bufferCount; i++) {
+                  buffers[i] = makePixelBuffer(width, height, surfaceBacked);
+                  if (!buffers[i]) {
+                      buffersOK = NO;
+                      break;
+                  }
+                  fillPixelBuffer(buffers[i], (NSUInteger)i * 17);
+              }
+              if (!buffersOK) {
+                  for (int i = 0; i < bufferCount; i++) if (buffers[i]) CVPixelBufferRelease(buffers[i]);
                   VTCompressionSessionInvalidate(session);
                   CFRelease(session);
                   return;
@@ -229,19 +241,21 @@ jobs:
               double start = CACurrentMediaTime();
               for (int i = 0; i < frames; i++) {
                   @autoreleasepool {
-                      fillPixelBuffer(pb, (NSUInteger)i);
+                      CVPixelBufferRef pb = buffers[i % bufferCount];
                       CMTime pts = CMTimeMake(i, fps);
                       NSDictionary *frameProps = i == 0 ? @{(__bridge NSString *)kVTEncodeFrameOptionKey_ForceKeyFrame: @YES} : @{};
                       NSNumber *submittedAt = @(CACurrentMediaTime());
+                      void *frameRef = (__bridge_retained void *)submittedAt;
                       OSStatus encodeStatus = VTCompressionSessionEncodeFrame(session,
                                                                               pb,
                                                                               pts,
                                                                               kCMTimeInvalid,
                                                                               (__bridge CFDictionaryRef)frameProps,
-                                                                              (__bridge_retained void *)submittedAt,
+                                                                              frameRef,
                                                                               NULL);
                       stats.submitted += 1;
                       if (encodeStatus != noErr) {
+                          CFRelease(frameRef);
                           stats.failures += 1;
                           NSLog(@"ENCODE_FAIL name=%@ frame=%d status=%@", name, i, fourCCString(encodeStatus));
                       }
@@ -275,7 +289,7 @@ jobs:
                         stats.maxLatencyMs);
               }
 
-              CVPixelBufferRelease(pb);
+              for (int i = 0; i < bufferCount; i++) CVPixelBufferRelease(buffers[i]);
               VTCompressionSessionInvalidate(session);
               CFRelease(session);
           }
@@ -291,8 +305,6 @@ jobs:
                   runCase(@"h264-auto-17pro-iosurface", kCMVideoCodecType_H264, 1206, 2622, YES, NO);
                   runCase(@"hevc-hw-17pro-iosurface", kCMVideoCodecType_HEVC, 1206, 2622, YES, YES);
                   runCase(@"hevc-auto-17pro-iosurface", kCMVideoCodecType_HEVC, 1206, 2622, YES, NO);
-                  runCase(@"h264-hw-17pro-memory", kCMVideoCodecType_H264, 1206, 2622, NO, YES);
-                  runCase(@"h264-auto-17pro-memory", kCMVideoCodecType_H264, 1206, 2622, NO, NO);
                   NSLog(@"VTEncodeProbe done");
               }
               return 0;
