@@ -182,26 +182,7 @@ jobs:
           xcodebuild -version
           xcrun simctl list runtimes available
 
-          ios_runtime="$(xcrun simctl list runtimes available --json | python3 -c '
-          import json, re, sys
-          data = json.load(sys.stdin)
-          choices = []
-          for runtime in data.get("runtimes", []):
-              if not runtime.get("isAvailable") or runtime.get("platform") != "iOS":
-                  continue
-              version = tuple(int(part) for part in re.findall(r"\d+", runtime.get("version", ""))[:3]) or (0,)
-              choices.append((version, runtime.get("identifier", "")))
-          if not choices:
-              raise SystemExit("No available iOS runtime")
-          choices.sort(reverse=True)
-          print(choices[0][1])
-          ')"
-
-          if xcrun simctl list devicetypes | grep -q 'com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation'; then
-            ios_udid="$(xcrun simctl create SimDeck-iPhone-SE com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation "$ios_runtime")"
-            echo "Created compact simulator SimDeck-iPhone-SE ($ios_udid) on $ios_runtime"
-          else
-            ios_udid="$(xcrun simctl list devices available --json | python3 -c '
+          ios_udid="$(xcrun simctl list devices available --json | python3 -c '
           import json, re, sys
           data = json.load(sys.stdin)
           choices = []
@@ -227,7 +208,6 @@ jobs:
           print(f"Selected simulator {name} ({udid}) on {runtime}", file=sys.stderr)
           print(udid)
           ')"
-          fi
 
           echo "Booting simulator $ios_udid"
           xcrun simctl shutdown "$ios_udid" || true
@@ -252,7 +232,7 @@ jobs:
           fi
           screenshot_ready=0
           echo "Waiting for simulator screenshot readiness"
-          for _ in {1..20}; do
+          for _ in {1..60}; do
             if run_with_timeout 5 xcrun simctl io "$ios_udid" screenshot /tmp/simdeck-provider-screen.png >/tmp/simdeck-screenshot.log 2>&1 && [[ -s /tmp/simdeck-provider-screen.png ]]; then
               screenshot_ready=1
               break
