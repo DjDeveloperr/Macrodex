@@ -34,7 +34,7 @@ on:
       stream_quality:
         description: SimDeck realtime stream quality profile
         required: false
-        default: ci-software
+        default: smooth
       webrtc_ice_servers:
         description: Comma-separated ICE server URLs for browser and provider WebRTC
         required: false
@@ -141,7 +141,7 @@ jobs:
           SIMDECK_WEBRTC_ICE_USERNAME: ${{ inputs.webrtc_ice_username }}
           SIMDECK_WEBRTC_ICE_CREDENTIAL: ${{ inputs.webrtc_ice_credential }}
           SIMDECK_WEBRTC_ICE_TRANSPORT_POLICY: ${{ inputs.webrtc_ice_transport_policy }}
-          SIMDECK_STREAM_QUALITY: ${{ inputs.stream_quality || 'ci-software' }}
+          SIMDECK_STREAM_QUALITY: ${{ inputs.stream_quality || 'smooth' }}
           RUST_LOG: info,wtransport=warn,quinn=warn
           RUST_BACKTRACE: full
           NSUnbufferedIO: YES
@@ -187,7 +187,6 @@ jobs:
           echo "Selecting Xcode at $latest_xcode"
           sudo xcode-select -s "$latest_xcode/Contents/Developer"
           xcodebuild -version
-          xcrun simctl list runtimes available
 
           ios_udid="$(xcrun simctl list devices available --json | python3 -c '
           import json, re, sys
@@ -221,37 +220,13 @@ jobs:
           echo "Booting simulator $ios_udid"
           xcrun simctl shutdown "$ios_udid" || true
           xcrun simctl boot "$ios_udid" || true
-          if ! run_with_timeout 180 xcrun simctl bootstatus "$ios_udid" -b; then
+          if ! run_with_timeout 180 xcrun simctl bootstatus "$ios_udid" -b >/tmp/simdeck-bootstatus.log 2>&1; then
             echo "simctl bootstatus timed out"
+            cat /tmp/simdeck-bootstatus.log || true
             xcrun simctl list devices "$ios_udid" || true
             exit 1
           fi
           echo "Simulator bootstatus complete"
-          echo "Opening Simulator.app in background"
-          /usr/bin/open -g -a Simulator --args -CurrentDeviceUDID "$ios_udid" >/tmp/simdeck-open-simulator.log 2>&1 &
-          open_pid="$!"
-          for _ in {1..20}; do
-            if ! kill -0 "$open_pid" 2>/dev/null; then
-              break
-            fi
-            sleep 0.25
-          done
-          if kill -0 "$open_pid" 2>/dev/null; then
-            echo "Simulator.app launch command is still running; continuing provider startup"
-          fi
-          screenshot_ready=0
-          echo "Waiting for simulator screenshot readiness"
-          for _ in {1..60}; do
-            if run_with_timeout 5 xcrun simctl io "$ios_udid" screenshot /tmp/simdeck-provider-screen.png >/tmp/simdeck-screenshot.log 2>&1 && [[ -s /tmp/simdeck-provider-screen.png ]]; then
-              screenshot_ready=1
-              break
-            fi
-            sleep 1
-          done
-          if [[ "$screenshot_ready" != "1" ]]; then
-            echo "Simulator screenshot did not become ready before provider start"
-            cat /tmp/simdeck-screenshot.log || true
-          fi
 
           dump_logs() {
             echo "--- simdeck.log ---"
@@ -291,7 +266,7 @@ jobs:
               --access-token "$PROVIDER_TOKEN" \
               --client-root "$PWD/client/dist" \
               --video-codec h264-software \
-              --stream-quality "${SIMDECK_STREAM_QUALITY:-ci-software}" \
+              --stream-quality "${SIMDECK_STREAM_QUALITY:-smooth}" \
               >> simdeck.log 2>&1 &
             simdeck_pid="$!"
             echo "SimDeck server pid: $simdeck_pid"
@@ -317,23 +292,6 @@ jobs:
           node "$bridge_script" \
             > simdeck-provider-bridge.log 2>&1 &
           bridge_pid="$!"
-
-          (
-            while true; do
-              sleep 15
-              echo "::group::SimDeck diagnostics $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-              curl -fsS "http://127.0.0.1:4310/api/metrics" || true
-              echo
-              echo "--- simdeck webrtc log tail ---"
-              grep -E 'WebRTC|ICE|candidate|peer connection|H264|h264|frame write|bootstrap' simdeck.log | tail -n 120 || true
-              echo "--- private bridge log tail ---"
-              tail -n 80 /tmp/simdeck-private-bridge.log || true
-              echo "--- provider bridge log tail ---"
-              tail -n 40 simdeck-provider-bridge.log || true
-              echo "::endgroup::"
-            done
-          ) &
-          diagnostics_pid="$!"
 
           register() {
             curl -fsS \
@@ -399,10 +357,6 @@ jobs:
               cat simdeck-provider-bridge.log || true
               exit 1
             fi
-            if ! kill -0 "$diagnostics_pid" 2>/dev/null; then
-              echo "diagnostics loop exited"
-            fi
-            register
           done
 
       - name: Upload SimDeck provider diagnostics
@@ -413,11 +367,9 @@ jobs:
           path: |
             simdeck.log
             simdeck-provider-bridge.log
+            /tmp/simdeck-bootstatus.log
             /tmp/simdeck-private-bridge.log
-            /tmp/simdeck-open-simulator.log
-            /tmp/simdeck-screenshot.log
             /tmp/simdeck-app-screenshot.log
-            /tmp/simdeck-provider-screen.png
             /tmp/simdeck-provider-app-screen.png
             ~/Library/Logs/DiagnosticReports/simdeck*.ips
             ~/Library/Logs/DiagnosticReports/simdeck*.crash
