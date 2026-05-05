@@ -230,7 +230,7 @@ jobs:
 
           dump_logs() {
             echo "--- simdeck.log ---"
-            cat simdeck.log || true
+            cat "${simdeck_log:-simdeck.log}" || cat simdeck.log || true
             echo "--- private bridge log ---"
             cat /tmp/simdeck-private-bridge.log || true
             echo "--- crash reports ---"
@@ -240,12 +240,12 @@ jobs:
           wait_for_simdeck_health() {
             healthy=0
             for _ in {1..120}; do
-              if ! kill -0 "$simdeck_pid" 2>/dev/null; then
-                echo "simdeck exited before health check passed"
+              if [[ -n "${simdeck_pid:-}" ]] && ! kill -0 "$simdeck_pid" 2>/dev/null; then
+                echo "simdeck supervisor exited before health check passed"
                 dump_logs
                 return 1
               fi
-              if curl -fsS http://127.0.0.1:4310/api/health >/dev/null; then
+              if curl -fsS "${simdeck_url:-http://127.0.0.1:4310}/api/health" >/dev/null; then
                 healthy=1
                 break
               fi
@@ -258,23 +258,44 @@ jobs:
             fi
           }
 
+          load_simdeck_daemon_metadata() {
+            ./build/simdeck daemon status > /tmp/simdeck-daemon-status.json
+            eval "$(python3 - <<'PY'
+          import json, shlex
+          with open('/tmp/simdeck-daemon-status.json') as handle:
+              status = json.load(handle)
+          daemon = status.get('daemon') or {}
+          for shell_name, key, fallback in (
+              ('simdeck_pid', 'pid', ''),
+              ('simdeck_url', 'httpUrl', 'http://127.0.0.1:4310'),
+              ('simdeck_token', 'accessToken', ''),
+              ('simdeck_log', 'logPath', 'simdeck.log'),
+          ):
+              print(f'{shell_name}={shlex.quote(str(daemon.get(key) or fallback))}')
+          PY
+          )"
+            cp "$simdeck_log" simdeck.log 2>/dev/null || true
+          }
+
           start_simdeck_server() {
-            echo "Starting SimDeck server"
-            ./build/simdeck serve \
+            echo "Starting supervised SimDeck daemon"
+            ./build/simdeck daemon restart \
               --port 4310 \
               --bind 127.0.0.1 \
-              --access-token "$PROVIDER_TOKEN" \
               --client-root "$PWD/client/dist" \
               --video-codec h264-software \
               --stream-quality "${SIMDECK_STREAM_QUALITY:-smooth}" \
-              >> simdeck.log 2>&1 &
-            simdeck_pid="$!"
-            echo "SimDeck server pid: $simdeck_pid"
+              > /tmp/simdeck-daemon-start.json
+            load_simdeck_daemon_metadata
+            echo "SimDeck supervisor pid: $simdeck_pid"
             wait_for_simdeck_health
           }
 
           : > simdeck.log
           simdeck_pid=""
+          simdeck_url="http://127.0.0.1:4310"
+          simdeck_token=""
+          simdeck_log="simdeck.log"
           start_simdeck_server
           echo "Skipping private stream prewarm; the first browser WebRTC connection will attach the stream."
 
@@ -287,7 +308,25 @@ jobs:
             echo "SimDeck Studio provider bridge script was not found"
             exit 1
           fi
-          SIMDECK_LOCAL_URL="http://127.0.0.1:4310" \
+          restart_args_json="$(SIMDECK_STREAM_QUALITY="${SIMDECK_STREAM_QUALITY:-smooth}" python3 - <<'PY'
+          import json, os
+          print(json.dumps([
+              'daemon', 'restart',
+              '--port', '4310',
+              '--bind', '127.0.0.1',
+              '--client-root', os.path.join(os.getcwd(), 'client/dist'),
+              '--video-codec', 'h264-software',
+              '--stream-quality', os.environ.get('SIMDECK_STREAM_QUALITY') or 'smooth',
+          ]))
+          PY
+          )"
+          SIMDECK_LOCAL_URL="$simdeck_url" \
+          SIMDECK_LOCAL_TOKEN="$simdeck_token" \
+          SIMDECK_LOCAL_DAEMON_PID="$simdeck_pid" \
+          SIMDECK_LOCAL_DAEMON_LOG="$simdeck_log" \
+          SIMDECK_LOCAL_DAEMON_COMMAND="$PWD/build/simdeck" \
+          SIMDECK_LOCAL_DAEMON_RESTART_ARGS_JSON="$restart_args_json" \
+          SIMDECK_LOCAL_DAEMON_STATUS_ARGS_JSON='["daemon","status"]' \
           SIMDECK_STUDIO_URL="$provider_base_url" \
           node "$bridge_script" \
             > simdeck-provider-bridge.log 2>&1 &
@@ -328,7 +367,6 @@ jobs:
             run_with_timeout 5 xcrun simctl io "$ios_udid" screenshot /tmp/simdeck-provider-app-screen.png >/tmp/simdeck-app-screenshot.log 2>&1 || cat /tmp/simdeck-app-screenshot.log || true
           fi
           deadline=$((SECONDS + 1800))
-          simdeck_restarts=0
           while true; do
             sleep 30
             if (( SECONDS >= deadline )); then
@@ -339,18 +377,10 @@ jobs:
               echo "SimDeck provider hard timeout reached"
               exit 0
             fi
-            if ! kill -0 "$simdeck_pid" 2>/dev/null; then
-              echo "simdeck exited"
+            if [[ -n "${simdeck_pid:-}" ]] && ! kill -0 "$simdeck_pid" 2>/dev/null; then
+              echo "simdeck supervisor exited"
               dump_logs
-              if (( simdeck_restarts >= 2 )); then
-                echo "simdeck restart limit reached"
-                exit 1
-              fi
-              simdeck_restarts=$((simdeck_restarts + 1))
-              echo "Restarting SimDeck server ($simdeck_restarts/2)"
-              start_simdeck_server
-              register || true
-              continue
+              exit 1
             fi
             if ! kill -0 "$bridge_pid" 2>/dev/null; then
               echo "provider bridge exited"
