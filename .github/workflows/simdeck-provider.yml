@@ -25,13 +25,6 @@ on:
       simdeck_artifact_url:
         description: Optional URL to a prebuilt simdeck binary tarball
         required: false
-      simdeck_repository:
-        description: GitHub repository to clone when SimDeck is not present in the target repo
-        required: false
-        default: NativeScript/SimDeck
-      simdeck_ref:
-        description: Optional SimDeck branch, tag, or SHA to check out
-        required: false
       stream_quality:
         description: SimDeck realtime stream quality profile
         required: false
@@ -72,6 +65,11 @@ jobs:
           github-token: ${{ github.token }}
           path: simdeck-artifact
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: Register provider workflow
         shell: bash
         env:
@@ -92,42 +90,29 @@ jobs:
             }" \
             "$SIMDECK_CLOUD_URL/api/actions/providers/register"
 
-      - name: Build or download SimDeck
+      - name: Install SimDeck
         shell: bash
         env:
           SIMDECK_ARTIFACT_URL: ${{ inputs.simdeck_artifact_url }}
-          SIMDECK_REPOSITORY: ${{ inputs.simdeck_repository || 'NativeScript/SimDeck' }}
-          SIMDECK_REF: ${{ inputs.simdeck_ref }}
         run: |
           set -euo pipefail
+          simdeck_install_dir="$PWD/.simdeck-provider"
+          rm -rf "$simdeck_install_dir"
+          npm install --prefix "$simdeck_install_dir" --no-audit --no-fund simdeck@latest
+          simdeck_package_root="$simdeck_install_dir/node_modules/simdeck"
+          test -x "$simdeck_install_dir/node_modules/.bin/simdeck"
+          test -d "$simdeck_package_root/client/dist"
+          test -f "$simdeck_package_root/scripts/studio-provider-bridge.mjs"
+          mkdir -p build client simdeck-provider-scripts
+          rm -rf client/dist
+          cp -R "$simdeck_package_root/client/dist" client/dist
+          cp "$simdeck_package_root/scripts/studio-provider-bridge.mjs" simdeck-provider-scripts/studio-provider-bridge.mjs
           if [[ -n "${SIMDECK_ARTIFACT_URL:-}" ]]; then
-            mkdir -p build
+            rm -f build/simdeck
             curl -fsSL "$SIMDECK_ARTIFACT_URL" | tar -xz -C build
             chmod +x build/simdeck
-          elif [[ -x ./scripts/build-client.sh && -x ./scripts/build-cli.sh ]]; then
-            ./scripts/build-client.sh
-            ./scripts/build-cli.sh
           else
-            simdeck_repo="${SIMDECK_REPOSITORY:-NativeScript/SimDeck}"
-            if [[ ! "$simdeck_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-              echo "Invalid SimDeck repository: $simdeck_repo"
-              exit 1
-            fi
-            clone_args=(--depth 1)
-            if [[ -n "${SIMDECK_REF:-}" ]]; then
-              clone_args+=(--branch "$SIMDECK_REF")
-            fi
-            git clone "${clone_args[@]}" "https://github.com/$simdeck_repo.git" simdeck-src
-            ./simdeck-src/scripts/build-client.sh
-            ./simdeck-src/scripts/build-cli.sh
-            mkdir -p build
-            mkdir -p client
-            cp simdeck-src/build/simdeck build/simdeck
-            cp simdeck-src/build/simdeck-bin build/simdeck-bin
-            rm -rf client/dist
-            cp -R simdeck-src/client/dist client/dist
-            chmod +x build/simdeck
-            chmod +x build/simdeck-bin
+            ln -sf "$simdeck_install_dir/node_modules/.bin/simdeck" build/simdeck
           fi
 
       - name: Start simulator provider
@@ -301,7 +286,10 @@ jobs:
           echo "Skipping private stream prewarm; the first browser WebRTC connection will attach the stream."
 
           provider_base_url="$SIMDECK_CLOUD_URL/simulator/$PREVIEW_ID"
-          bridge_script="scripts/studio-provider-bridge.mjs"
+          bridge_script="simdeck-provider-scripts/studio-provider-bridge.mjs"
+          if [[ ! -f "$bridge_script" && -f "scripts/studio-provider-bridge.mjs" ]]; then
+            bridge_script="scripts/studio-provider-bridge.mjs"
+          fi
           if [[ ! -f "$bridge_script" && -f "simdeck-src/scripts/studio-provider-bridge.mjs" ]]; then
             bridge_script="simdeck-src/scripts/studio-provider-bridge.mjs"
           fi
