@@ -20,8 +20,8 @@ enum MacrodexPalette {
         )
     }
 
-    static var accent: Pair        { pair("accent", lightFallback: "#4DA3FF", darkFallback: "#4DA3FF") }
-    static var accentStrong: Pair   { pair("accentStrong", lightFallback: "#2F8FFF", darkFallback: "#7DBBFF") }
+    static var accent: Pair        { pair("accent", lightFallback: "#34C759", darkFallback: "#34C759") }
+    static var accentStrong: Pair   { pair("accentStrong", lightFallback: "#2DBE60", darkFallback: "#6EEB83") }
     static var textPrimary: Pair    { pair("textPrimary", lightFallback: "#1A1A1A", darkFallback: "#FFFFFF") }
     static var textSecondary: Pair  { pair("textSecondary", lightFallback: "#6B6B6B", darkFallback: "#888888") }
     static var textMuted: Pair      { pair("textMuted", lightFallback: "#9E9E9E", darkFallback: "#555555") }

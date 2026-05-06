@@ -59,7 +59,7 @@
     "slug": "codex-dark",
     "name": "Codex Dark",
     "type": "dark",
-    "accentHex": "#0169cc",
+    "accentHex": "#34C759",
     "backgroundHex": "#111111",
     "foregroundHex": "#fcfcfc"
   },
@@ -67,7 +67,7 @@
     "slug": "codex-light",
     "name": "Codex Light",
     "type": "light",
-    "accentHex": "#0169cc",
+    "accentHex": "#34C759",
     "backgroundHex": "#ffffff",
     "foregroundHex": "#0d0d0d"
   },

@@ -69,7 +69,7 @@ struct ResolvedTheme {
         self.textMuted = c["editorLineNumber.foreground"] ?? Self.dimColor(fg, factor: 0.35)
         self.textBody = Self.dimColor(fg, factor: 0.88)
         self.textSystem = Self.dimColor(fg, factor: 0.7)
-        self.accent = c["textLink.foreground"] ?? c["button.background"] ?? "#4DA3FF"
+        self.accent = c["textLink.foreground"] ?? c["button.background"] ?? "#34C759"
         self.accentStrong = c["button.background"] ?? c["textLink.foreground"] ?? self.accent
         self.border = c["editorGroup.border"] ?? c["sideBar.border"] ?? Self.adjustBrightness(self.surface, by: d.type == .dark ? 0.05 : -0.05)
         self.separator = c["panel.border"] ?? Self.adjustBrightness(bg, by: d.type == .dark ? 0.04 : -0.04)
@@ -136,7 +136,7 @@ extension ResolvedTheme {
             "editor.background": "#FFFFFF", "editor.foreground": "#0D0D0D",
             "sideBar.background": "#FCFCFC", "sideBar.foreground": "#212121",
             "activityBar.background": "#FCFCFC",
-            "textLink.foreground": "#4DA3FF", "button.background": "#4DA3FF",
+            "textLink.foreground": "#34C759", "button.background": "#34C759",
             "gitDecoration.addedResourceForeground": "#00A240",
             "gitDecoration.deletedResourceForeground": "#E02E2A",
         ])
@@ -148,7 +148,7 @@ extension ResolvedTheme {
             "editor.background": "#111111", "editor.foreground": "#FCFCFC",
             "sideBar.background": "#131313", "sideBar.foreground": "#8F8F8F",
             "activityBar.background": "#131313",
-            "textLink.foreground": "#4DA3FF", "button.background": "#4DA3FF",
+            "textLink.foreground": "#34C759", "button.background": "#34C759",
             "gitDecoration.addedResourceForeground": "#00A240",
             "gitDecoration.deletedResourceForeground": "#E02E2A",
         ])

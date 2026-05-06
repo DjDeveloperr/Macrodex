@@ -135,7 +135,7 @@ struct UserBubble: View {
                                     ),
                                     style: .continuous
                                 )
-                                .fill(Color(uiColor: .systemBlue))
+                                .fill(MacrodexTheme.accentStrong)
                             )
                     }
                 }
