@@ -77,6 +77,7 @@ targets:
           CODE_SIGN_ENTITLEMENTS: Macrodex/MacrodexDebug.entitlements
         Release:
           CODE_SIGN_ENTITLEMENTS: Macrodex/Macrodex.entitlements
+          CODE_SIGN_IDENTITY: Apple Distribution
 
 schemes:
   Macrodex:
