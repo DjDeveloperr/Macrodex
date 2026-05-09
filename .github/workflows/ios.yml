@@ -74,12 +74,9 @@ jobs:
           CODE_SIGNING_ALLOWED=NO
 
       - name: Upload simulator app artifact
-        uses: actions/upload-artifact@v4
+        uses: NativeScript/SimDeck/actions/upload-ios-simulator-app@main
         with:
-          name: ios-simulator-app
-          path: ${{ env.DERIVED_DATA_PATH }}/Build/Products/Debug-iphonesimulator/*.app
-          if-no-files-found: error
-          retention-days: 7
+          app-glob: ${{ env.DERIVED_DATA_PATH }}/Build/Products/Debug-iphonesimulator/*.app
 
       - name: Validate App Store Connect secrets
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

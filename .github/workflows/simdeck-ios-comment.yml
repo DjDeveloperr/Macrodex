@@ -1,0 +1,56 @@
+name: SimDeck iOS Comment
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to run
+        required: true
+      command:
+        description: SimDeck command/experiment flags
+        required: true
+        default: simdeck run ios
+  issue_comment:
+    types:
+      - created
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+concurrency:
+  group: simdeck-ios-pr-${{ github.event.issue.number || inputs.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  run-ios:
+    name: Run PR app in SimDeck
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' ||
+        (
+          github.event.issue.pull_request &&
+          startsWith(github.event.comment.body, 'simdeck run ios')
+        )
+      }}
+    runs-on: macos-26
+    timeout-minutes: 35
+
+    steps:
+      - name: Run PR app in SimDeck
+        uses: NativeScript/SimDeck/actions/run-ios-comment-session@main
+        with:
+          pr_number: ${{ github.event.issue.number || inputs.pr_number }}
+          command: ${{ github.event.comment.body || inputs.command }}
+          command_comment_id: ${{ github.event.comment.id }}
+          command_comment_author: ${{ github.event.comment.user.login }}
+          build_workflow: ios.yml
+          bundle_id: com.dj.Macrodex
+          stream_profile: tiny
+          simulator_name: iPhone 17 Pro
+          device_strategy: latest
