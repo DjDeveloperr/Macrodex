@@ -77,6 +77,9 @@ targets:
           CODE_SIGN_ENTITLEMENTS: Macrodex/MacrodexDebug.entitlements
         Release:
           CODE_SIGN_ENTITLEMENTS: Macrodex/Macrodex.entitlements
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: $(IOS_CODE_SIGN_IDENTITY)
+          PROVISIONING_PROFILE_SPECIFIER: $(IOS_PROFILE_NAME)
 
 schemes:
   Macrodex:
