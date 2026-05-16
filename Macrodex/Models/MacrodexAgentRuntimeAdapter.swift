@@ -3496,10 +3496,36 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
                     titleCandidate = title
                 }
                 let summary = toolOutputs[call.id].map(Self.preview)
-                let itemID = "\(turnID)-tool-\(call.id)"
-                let item = HydratedConversationItem(
-                    id: itemID,
-                    content: .dynamicToolCall(
+                let defaultItemID = "\(turnID)-tool-\(call.id)"
+                let hostedWebSearchItemID = "\(turnID)-web-search-\(call.id)"
+                let isWebSearch = call.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    == MacrodexAgentBuiltInToolDefinitions.webSearch.name
+                let itemID = isWebSearch && record.items.contains(where: { $0.id == hostedWebSearchItemID })
+                    ? hostedWebSearchItemID
+                    : defaultItemID
+                let existingItem = record.items.first { $0.id == itemID }
+                let content: HydratedConversationItemContent
+                if isWebSearch {
+                    let previous: HydratedWebSearchData? = {
+                        if case .webSearch(let data) = existingItem?.content { return data }
+                        return nil
+                    }()
+                    let argumentsJson = Self.jsonString(call.arguments)
+                    content = .webSearch(
+                        HydratedWebSearchData(
+                            query: Self.webSearchQuery(fromArgumentsJSON: argumentsJson) ?? previous?.query ?? "",
+                            actionJson: argumentsJson,
+                            isInProgress: false
+                        )
+                    )
+                } else if case .dynamicToolCall(var data) = existingItem?.content {
+                    data.status = .completed
+                    data.success = !(toolOutputs[call.id]?.localizedCaseInsensitiveContains("\"error\"") ?? false)
+                    data.argumentsJson = Self.jsonString(call.arguments)
+                    data.contentSummary = summary ?? data.contentSummary
+                    content = .dynamicToolCall(data)
+                } else {
+                    content = .dynamicToolCall(
                         HydratedDynamicToolCallData(
                             tool: call.name,
                             status: .completed,
@@ -3508,10 +3534,14 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
                             argumentsJson: Self.jsonString(call.arguments),
                             contentSummary: summary
                         )
-                    ),
-                    sourceTurnId: turnID,
+                    )
+                }
+                let item = HydratedConversationItem(
+                    id: itemID,
+                    content: content,
+                    sourceTurnId: existingItem?.sourceTurnId ?? turnID,
                     sourceTurnIndex: toolSourceTurnIndices[call.id],
-                    timestamp: Double(Self.nowMilliseconds()) / 1000.0,
+                    timestamp: existingItem?.timestamp ?? Double(Self.nowMilliseconds()) / 1000.0,
                     isFromUserTurnBoundary: false
                 )
                 Self.upsertOrderedItem(item, in: &record.items, fallbackBeforeItemID: record.activeAssistantItemID)
@@ -3543,14 +3573,10 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
                 content: .assistant(HydratedAssistantMessageData(text: finalContent, agentNickname: nil, agentRole: nil, phase: .finalAnswer)),
                 sourceTurnId: turnID,
                 sourceTurnIndex: finalAssistantSourceTurnIndex,
-                timestamp: Double(Self.nowMilliseconds()) / 1000.0,
+                timestamp: record.items.first(where: { $0.id == itemID })?.timestamp ?? Double(Self.nowMilliseconds()) / 1000.0,
                 isFromUserTurnBoundary: false
             )
-            if let index = record.items.firstIndex(where: { $0.id == itemID }) {
-                record.items[index] = item
-            } else {
-                Self.upsertOrderedItem(item, in: &record.items)
-            }
+            Self.upsertOrderedItem(item, in: &record.items)
         }
 
         if let finalAssistantSourceTurnIndex {
@@ -4276,11 +4302,65 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
         for item: HydratedConversationItem,
         in items: [HydratedConversationItem]
     ) -> Int? {
+        if let sourceTurnId = item.sourceTurnId?.nilIfBlank {
+            let sameTurnIndices = items.indices.filter {
+                items[$0].sourceTurnId?.nilIfBlank == sourceTurnId
+            }
+            if !sameTurnIndices.isEmpty {
+                if let firstLaterItem = sameTurnIndices.first(where: { item.shouldSortBefore(items[$0]) }) {
+                    return firstLaterItem
+                }
+                return sameTurnIndices.last.map { $0 + 1 }
+            }
+        }
+
+        if let restoredReasoningIndex = restoredReasoningInsertionIndex(for: item, in: items) {
+            return restoredReasoningIndex
+        }
+
         guard let itemIndex = item.sourceTurnIndex else { return nil }
         return items.firstIndex { existing in
             guard let existingIndex = existing.sourceTurnIndex else { return false }
             if existingIndex > itemIndex { return true }
             return existingIndex == itemIndex && item.shouldSortBefore(existing)
+        }
+    }
+
+    private static func restoredReasoningInsertionIndex(
+        for item: HydratedConversationItem,
+        in items: [HydratedConversationItem]
+    ) -> Int? {
+        guard case .reasoning = item.content,
+              item.sourceTurnId?.nilIfBlank != nil,
+              let targetTurnIndex = item.sourceTurnIndex.map(Int.init)
+        else {
+            return nil
+        }
+
+        let userBoundary = items.indices.reversed().first { index in
+            guard let sourceTurnIndex = items[index].sourceTurnIndex.map(Int.init),
+                  sourceTurnIndex < targetTurnIndex,
+                  case .user = items[index].content
+            else {
+                return false
+            }
+            return true
+        }
+        let lowerTurnIndex = userBoundary.flatMap { items[$0].sourceTurnIndex.map(Int.init) } ?? Int.min
+        let searchStart = userBoundary.map { $0 + 1 } ?? items.startIndex
+        guard searchStart < items.endIndex else { return nil }
+
+        return items[searchStart...].firstIndex { existing in
+            guard let existingTurnIndex = existing.sourceTurnIndex.map(Int.init),
+                  existingTurnIndex > lowerTurnIndex,
+                  existingTurnIndex <= targetTurnIndex
+            else {
+                return false
+            }
+            if case .user = existing.content {
+                return false
+            }
+            return true
         }
     }
 
@@ -4502,7 +4582,18 @@ private extension HydratedConversationItem {
     }
 
     func shouldSortBefore(_ other: HydratedConversationItem) -> Bool {
-        sourceOrderRank < other.sourceOrderRank
+        if sourceTurnId?.nilIfBlank == other.sourceTurnId?.nilIfBlank,
+           sourceTurnId?.nilIfBlank != nil,
+           let timestampOrder = timestampOrder(comparedTo: other) {
+            return timestampOrder
+        }
+        if sourceOrderRank != other.sourceOrderRank {
+            return sourceOrderRank < other.sourceOrderRank
+        }
+        if let timestampOrder = timestampOrder(comparedTo: other) {
+            return timestampOrder
+        }
+        return id < other.id
     }
 
     private var sourceOrderRank: Int {
@@ -4518,6 +4609,12 @@ private extension HydratedConversationItem {
         default:
             return 2
         }
+    }
+
+    private func timestampOrder(comparedTo other: HydratedConversationItem) -> Bool? {
+        guard let timestamp, let otherTimestamp = other.timestamp else { return nil }
+        guard abs(timestamp - otherTimestamp) > 0.000_001 else { return nil }
+        return timestamp < otherTimestamp
     }
 }
 

@@ -861,16 +861,18 @@ private struct HomeNavigationView: View {
 
         let cwd = await AgentRuntimeBootstrap.defaultCwd()
 
-        await conversationWarmup.prewarmIfNeeded()
-        await appModel.loadConversationMetadataIfNeeded(serverId: serverId)
+        if !conversationWarmup.hasCompletedWarmup {
+            Task { await conversationWarmup.prewarmIfNeeded() }
+        }
         let selectedModel = selectedModelOverride(for: serverId, requiresImageInput: !images.isEmpty)
         let selectedEffort = selectedReasoningOverride()
+        let config = launchConfig(serverId: serverId, model: selectedModel)
         workDir = cwd
         appState.currentCwd = cwd
 
         let startedKey = try await appModel.client.startThread(
             serverId: serverId,
-            params: launchConfig(serverId: serverId, model: selectedModel).threadStartRequest(
+            params: config.threadStartRequest(
                 cwd: cwd,
                 dynamicTools: AgentDynamicToolSpecs.defaultThreadTools(
                     includeGenerativeUI: false
@@ -878,19 +880,19 @@ private struct HomeNavigationView: View {
             )
         )
         RecentDirectoryStore.shared.record(path: cwd, for: serverId)
+        appModel.seedPendingThread(
+            key: startedKey,
+            cwd: cwd,
+            prompt: trimmedPrompt,
+            model: selectedModel,
+            reasoningEffort: selectedEffort,
+            approvalPolicy: config.approvalPolicy
+        )
         appModel.activateThread(startedKey)
         withAnimation(.easeInOut(duration: 0.18)) {
             openConversation(startedKey)
         }
-        await Task.yield()
-        await appModel.refreshSnapshot()
-
-        let resolvedKey = await appModel.ensureThreadLoaded(key: startedKey)
-            ?? appModel.snapshot?.threadSnapshot(for: startedKey)?.key
-            ?? startedKey
-        if resolvedKey != startedKey {
-            replaceTopConversation(with: resolvedKey)
-        }
+        Task { await appModel.loadConversationMetadataIfNeeded(serverId: serverId) }
 
         var additionalInputs = skillMentions.map { mention in
             AppUserInput.skill(name: mention.name, path: AbsolutePath(value: mention.path))
@@ -899,14 +901,14 @@ private struct HomeNavigationView: View {
         let payload = AppComposerPayload(
             text: trimmedPrompt,
             additionalInputs: additionalInputs,
-            approvalPolicy: appState.launchApprovalPolicy(for: resolvedKey),
-            sandboxPolicy: appState.turnSandboxPolicy(for: resolvedKey),
+            approvalPolicy: appState.launchApprovalPolicy(for: startedKey),
+            sandboxPolicy: appState.turnSandboxPolicy(for: startedKey),
             model: selectedModel,
             effort: selectedEffort,
             serviceTier: ServiceTier(wireValue: fastMode ? "fast" : nil)
         )
-        try await appModel.startTurn(key: resolvedKey, payload: payload)
-        await appModel.refreshSnapshot()
+        try await appModel.startTurn(key: startedKey, payload: payload)
+        Task { await appModel.refreshSnapshot() }
     }
 
     private func launchConfig(for threadKey: ThreadKey? = nil) -> AppThreadLaunchConfig {
@@ -1948,20 +1950,25 @@ struct DashboardQuickComposerBar: View {
         foodSearchTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: isAutomaticSearch ? 420_000_000 : 220_000_000)
             guard !Task.isCancelled else { return }
+            if isAutomaticSearch {
+                let localResults = Array(foodSearchMatches(for: trimmed).prefix(6))
+                foodSearchResults = localResults
+                foodSearchCache[trimmed] = localResults
+                foodSearchLoading = false
+                return
+            }
             await CalorieTrackerStore.shared.refresh()
             guard !Task.isCancelled else { return }
             let localResults = foodSearchMatches(for: trimmed)
             foodSearchResults = localResults
-            if trimmed.count >= 2 {
-                let rankedResults = await FoodSearchAIResolver.results(
-                    query: trimmed,
-                    candidates: localResults,
-                    timeoutSeconds: isAutomaticSearch ? 14 : 10
-                )
-                guard !Task.isCancelled else { return }
-                foodSearchResults = rankedResults
-                foodSearchCache[trimmed] = rankedResults
-            }
+            let rankedResults = await FoodSearchAIResolver.results(
+                query: trimmed,
+                candidates: localResults,
+                timeoutSeconds: 10
+            )
+            guard !Task.isCancelled else { return }
+            foodSearchResults = rankedResults
+            foodSearchCache[trimmed] = rankedResults
             foodSearchLoading = false
         }
     }

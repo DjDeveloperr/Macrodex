@@ -480,8 +480,15 @@ struct HomeComposerView: View {
                     )
                 )
                 RecentDirectoryStore.shared.record(path: project.cwd, for: project.serverId)
+                appModel.seedPendingThread(
+                    key: threadKey,
+                    cwd: project.cwd,
+                    prompt: text,
+                    model: modelOverride,
+                    reasoningEffort: effortOverride,
+                    approvalPolicy: launchConfig.approvalPolicy
+                )
                 appModel.activateThread(threadKey)
-                await appModel.refreshSnapshot()
                 onThreadCreated(threadKey)
                 let additionalInputs = images
                     .compactMap(ConversationAttachmentSupport.prepareImage)
@@ -496,7 +503,7 @@ struct HomeComposerView: View {
                     serviceTier: ServiceTier(wireValue: fastMode ? "fast" : nil)
                 )
                 try await appModel.startTurn(key: threadKey, payload: payload)
-                await appModel.refreshSnapshot()
+                Task { await appModel.refreshSnapshot() }
             } catch {
                 errorMessage = error.localizedDescription
             }

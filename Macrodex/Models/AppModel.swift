@@ -1157,7 +1157,6 @@ final class AppModel {
             return items.count
         }
 
-        let targetRank = sourceOrderRank(for: item)
         if let insertionIndex = items.firstIndex(where: {
             guard let sourceTurnIndex = $0.sourceTurnIndex.map(Int.init) else {
                 return false
@@ -1165,7 +1164,7 @@ final class AppModel {
             if sourceTurnIndex > targetTurnIndex {
                 return true
             }
-            return sourceTurnIndex == targetTurnIndex && targetRank < sourceOrderRank(for: $0)
+            return sourceTurnIndex == targetTurnIndex && itemSortsBefore(item, $0)
         }) {
             return insertionIndex
         }
@@ -1195,13 +1194,33 @@ final class AppModel {
         }
         guard !sameTurnIndexes.isEmpty else { return nil }
 
-        let targetRank = sourceOrderRank(for: item)
-        if let firstHigherRank = sameTurnIndexes.first(where: {
-            sourceOrderRank(for: items[$0]) > targetRank
+        if let firstLaterItem = sameTurnIndexes.first(where: {
+            itemSortsBefore(item, items[$0])
         }) {
-            return firstHigherRank
+            return firstLaterItem
         }
         return sameTurnIndexes.last.map { $0 + 1 }
+    }
+
+    private static func itemSortsBefore(
+        _ item: HydratedConversationItem,
+        _ other: HydratedConversationItem
+    ) -> Bool {
+        if let timestampOrder = timestampOrder(item.timestamp, other.timestamp) {
+            return timestampOrder
+        }
+        let targetRank = sourceOrderRank(for: item)
+        let otherRank = sourceOrderRank(for: other)
+        if targetRank != otherRank {
+            return targetRank < otherRank
+        }
+        return item.id < other.id
+    }
+
+    private static func timestampOrder(_ lhs: Double?, _ rhs: Double?) -> Bool? {
+        guard let lhs, let rhs else { return nil }
+        guard abs(lhs - rhs) > 0.000_001 else { return nil }
+        return lhs < rhs
     }
 
     private static func sourceOrderRank(for item: HydratedConversationItem) -> Int {
@@ -1586,6 +1605,117 @@ final class AppModel {
 
     func threadSnapshot(for key: ThreadKey) -> AppThreadSnapshot? {
         snapshot?.threadSnapshot(for: key) ?? cachedThreadSnapshots[key]
+    }
+
+    func seedPendingThread(
+        key: ThreadKey,
+        cwd: String,
+        prompt: String,
+        model: String?,
+        reasoningEffort: ReasoningEffort?,
+        approvalPolicy: AppAskForApproval?
+    ) {
+        let now = Int64(Date().timeIntervalSince1970)
+        let preview = Self.previewText(prompt, fallback: "New chat")
+        let resolvedModel = model?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+        let provider = Self.providerID(for: resolvedModel)
+        let info = ThreadInfo(
+            id: key.threadId,
+            title: nil,
+            model: resolvedModel,
+            status: .idle,
+            preview: preview,
+            cwd: cwd,
+            path: nil,
+            modelProvider: provider,
+            agentNickname: nil,
+            agentRole: nil,
+            parentThreadId: nil,
+            agentStatus: nil,
+            createdAt: now,
+            updatedAt: now
+        )
+        let thread = AppThreadSnapshot(
+            key: key,
+            info: info,
+            collaborationMode: .default,
+            model: resolvedModel,
+            reasoningEffort: reasoningEffort?.wireValue,
+            effectiveApprovalPolicy: approvalPolicy,
+            effectiveSandboxPolicy: nil,
+            hydratedConversationItems: [],
+            queuedFollowUps: [],
+            activeTurnId: nil,
+            activePlanProgress: nil,
+            pendingPlanImplementationPrompt: nil,
+            contextTokensUsed: nil,
+            modelContextWindow: nil,
+            rateLimits: nil,
+            realtimeSessionId: nil,
+            stats: nil,
+            tokenUsage: nil
+        )
+        cacheThreadSnapshot(thread)
+
+        guard var snapshot else { return }
+        if let index = snapshot.threads.firstIndex(where: { $0.key == key }) {
+            snapshot.threads[index] = thread
+        } else {
+            snapshot.threads.append(thread)
+        }
+
+        let server = snapshot.serverSnapshot(for: key.serverId)
+        let summary = AppSessionSummary(
+            key: key,
+            serverDisplayName: server?.displayName ?? key.serverId,
+            serverHost: server?.host ?? "",
+            title: preview,
+            preview: preview,
+            cwd: cwd,
+            model: resolvedModel ?? "",
+            modelProvider: provider,
+            parentThreadId: nil,
+            agentNickname: nil,
+            agentRole: nil,
+            agentDisplayLabel: nil,
+            agentStatus: .unknown,
+            updatedAt: now,
+            hasActiveTurn: false,
+            isSubagent: false,
+            isFork: false,
+            lastResponsePreview: nil,
+            lastResponseTurnId: nil,
+            lastUserMessage: preview,
+            lastToolLabel: nil,
+            recentToolLog: [],
+            lastTurnStartMs: nil,
+            lastTurnEndMs: nil,
+            stats: nil,
+            tokenUsage: nil
+        )
+        if let index = snapshot.sessionSummaries.firstIndex(where: { $0.key == key }) {
+            snapshot.sessionSummaries[index] = summary
+        } else {
+            snapshot.sessionSummaries.append(summary)
+        }
+        snapshot.sessionSummaries.sort(by: Self.sessionSummarySort(lhs:rhs:))
+        snapshot.activeThread = key
+        self.snapshot = snapshot
+        lastError = nil
+    }
+
+    private static func previewText(_ text: String, fallback: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return fallback }
+        let oneLine = trimmed
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\t", with: " ")
+        return oneLine.count > 80 ? String(oneLine.prefix(77)) + "..." : oneLine
+    }
+
+    private static func providerID(for model: String?) -> String {
+        guard let model else { return "openai" }
+        return model.hasPrefix("google/") ? "google" : "openai"
     }
 
     private func hasAuthoritativePermissions(_ thread: AppThreadSnapshot) -> Bool {
