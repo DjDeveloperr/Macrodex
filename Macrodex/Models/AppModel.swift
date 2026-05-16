@@ -21,11 +21,11 @@ final class AppModel {
     private static let liveThreadStateCoalescingNanoseconds: UInt64 = 150_000_000  // ~6fps metadata
 
 
-    nonisolated static func prewarmPiRuntime() {
+    nonisolated static func prewarmAgentRuntime() {
         AgentRuntimeBootstrap.prewarm()
     }
 
-    static let shared = AppModel(backend: PiAgentRuntimeBackend.shared)
+    static let shared = AppModel(backend: MacrodexAgentRuntimeBackend.shared)
 
     struct ComposerPrefillRequest: Identifiable, Equatable {
         let id = UUID()
@@ -71,7 +71,7 @@ final class AppModel {
         serverBridge: ServerBridge? = nil
     ) {
         self.runtimeBackend = backend
-        self.storeBridge = store ?? backend?.store ?? PiAgentRuntimeBackend.shared.store
+        self.storeBridge = store ?? backend?.store ?? MacrodexAgentRuntimeBackend.shared.store
         self.clientBridge = client ?? backend?.client
         self.serverBridgeValue = serverBridge ?? backend?.serverBridge
     }
@@ -93,7 +93,7 @@ final class AppModel {
         if let clientBridge {
             return clientBridge
         }
-        let bridge = runtimeBackend?.client ?? PiAgentRuntimeBackend.shared.client
+        let bridge = runtimeBackend?.client ?? MacrodexAgentRuntimeBackend.shared.client
         clientBridge = bridge
         return bridge
     }
@@ -102,7 +102,7 @@ final class AppModel {
         if let serverBridgeValue {
             return serverBridgeValue
         }
-        let bridge = runtimeBackend?.serverBridge ?? PiAgentRuntimeBackend.shared.serverBridge
+        let bridge = runtimeBackend?.serverBridge ?? MacrodexAgentRuntimeBackend.shared.serverBridge
         serverBridgeValue = bridge
         return bridge
     }
@@ -428,6 +428,14 @@ final class AppModel {
                 enqueueCommandRowUpsert(key: key, item: item)
             } else if !applyThreadItemUpsert(key: key, item: item) {
                 scheduleThreadSnapshotRefresh(for: key)
+            }
+            if case .assistant(let data) = item.content,
+               !sessionSummary.hasActiveTurn {
+                StreamingRendererCoordinator.shared.reconcileFullText(
+                    data.text,
+                    for: item.id,
+                    finish: true
+                )
             }
             // Reducer piggybacks the refreshed per-thread summary on every
             // item change, so the home dashboard's session-summary driven
@@ -822,12 +830,8 @@ final class AppModel {
             guard let item = mutation.upsertItem else { continue }
             var thread = snapshot.threads[threadIndex]
 
-            if let itemIndex = thread.hydratedConversationItems.firstIndex(where: { $0.id == item.id }) {
-                guard thread.hydratedConversationItems[itemIndex] != item else { continue }
-                thread.hydratedConversationItems[itemIndex] = item
-            } else {
-                let insertionIndex = Self.insertionIndex(for: item, in: thread.hydratedConversationItems)
-                thread.hydratedConversationItems.insert(item, at: insertionIndex)
+            guard Self.upsertHydratedConversationItem(item, in: &thread.hydratedConversationItems) else {
+                continue
             }
 
             snapshot.threads[threadIndex] = thread
@@ -987,12 +991,8 @@ final class AppModel {
         }
 
         var thread = snapshot.threads[threadIndex]
-        if let itemIndex = thread.hydratedConversationItems.firstIndex(where: { $0.id == item.id }) {
-            guard thread.hydratedConversationItems[itemIndex] != item else { return true }
-            thread.hydratedConversationItems[itemIndex] = item
-        } else {
-            let insertionIndex = Self.insertionIndex(for: item, in: thread.hydratedConversationItems)
-            thread.hydratedConversationItems.insert(item, at: insertionIndex)
+        guard Self.upsertHydratedConversationItem(item, in: &thread.hydratedConversationItems) else {
+            return true
         }
 
         snapshot.threads[threadIndex] = thread
@@ -1148,19 +1148,75 @@ final class AppModel {
         for item: HydratedConversationItem,
         in items: [HydratedConversationItem]
     ) -> Int {
+        if let sourceTurnId = item.sourceTurnId?.nilIfBlank,
+           let index = insertionIndexWithinSourceTurn(for: item, sourceTurnId: sourceTurnId, in: items) {
+            return index
+        }
+
         guard let targetTurnIndex = item.sourceTurnIndex.map(Int.init) else {
             return items.count
         }
-        if let lastSameTurnIndex = items.lastIndex(where: { $0.sourceTurnIndex.map(Int.init) == targetTurnIndex }) {
-            return lastSameTurnIndex + 1
-        }
-        if let nextTurnIndex = items.firstIndex(where: {
-            guard let sourceTurnIndex = $0.sourceTurnIndex.map(Int.init) else { return false }
-            return sourceTurnIndex > targetTurnIndex
+
+        let targetRank = sourceOrderRank(for: item)
+        if let insertionIndex = items.firstIndex(where: {
+            guard let sourceTurnIndex = $0.sourceTurnIndex.map(Int.init) else {
+                return false
+            }
+            if sourceTurnIndex > targetTurnIndex {
+                return true
+            }
+            return sourceTurnIndex == targetTurnIndex && targetRank < sourceOrderRank(for: $0)
         }) {
-            return nextTurnIndex
+            return insertionIndex
         }
         return items.count
+    }
+
+    private static func upsertHydratedConversationItem(
+        _ item: HydratedConversationItem,
+        in items: inout [HydratedConversationItem]
+    ) -> Bool {
+        let previous = items
+        if let itemIndex = items.firstIndex(where: { $0.id == item.id }) {
+            items.remove(at: itemIndex)
+        }
+        let insertionIndex = insertionIndex(for: item, in: items)
+        items.insert(item, at: insertionIndex)
+        return previous != items
+    }
+
+    private static func insertionIndexWithinSourceTurn(
+        for item: HydratedConversationItem,
+        sourceTurnId: String,
+        in items: [HydratedConversationItem]
+    ) -> Int? {
+        let sameTurnIndexes = items.indices.filter {
+            items[$0].sourceTurnId?.nilIfBlank == sourceTurnId
+        }
+        guard !sameTurnIndexes.isEmpty else { return nil }
+
+        let targetRank = sourceOrderRank(for: item)
+        if let firstHigherRank = sameTurnIndexes.first(where: {
+            sourceOrderRank(for: items[$0]) > targetRank
+        }) {
+            return firstHigherRank
+        }
+        return sameTurnIndexes.last.map { $0 + 1 }
+    }
+
+    private static func sourceOrderRank(for item: HydratedConversationItem) -> Int {
+        switch item.content {
+        case .user:
+            return 0
+        case .reasoning:
+            return 1
+        case .commandExecution, .fileChange, .turnDiff, .mcpToolCall, .dynamicToolCall, .webSearch, .imageGeneration:
+            return 2
+        case .assistant:
+            return 3
+        default:
+            return 2
+        }
     }
 
     private static func insertionIndex(
@@ -1607,6 +1663,16 @@ final class AppModel {
         }
 
         return snapshot
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
+    }
+
+    var nilIfBlank: String? {
+        trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
     }
 }
 

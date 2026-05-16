@@ -17,6 +17,7 @@ sim-after-install.png
 # Local automation / release scratch space
 .asc/
 .local-ci/
+.simdeck-preview/
 .local-size-test/
 .device-crashes/
 ci/ExportOptionsTestFlight.plist

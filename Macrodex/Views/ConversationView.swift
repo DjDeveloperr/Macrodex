@@ -459,6 +459,7 @@ private struct ConversationBottomChrome: View {
     let onAutoFocusComposerConsumed: (() -> Void)?
     let onOpenConversation: ((ThreadKey) -> Void)?
     let onResumeSessions: ((String) -> Void)?
+    @State private var keyboardVisible = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -480,7 +481,13 @@ private struct ConversationBottomChrome: View {
             )
             .background(.clear, ignoresSafeAreaEdges: .bottom)
         }
-        .padding(.bottom, 32)
+        .padding(.bottom, keyboardVisible ? 0 : 32)
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            keyboardVisible = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardVisible = false
+        }
     }
 }
 
@@ -1508,7 +1515,7 @@ private struct ConversationInputBar: View {
                 onApplyFoodSuggestion: applyFoodSuggestion
             )
         }
-        .offset(y: keyboardVisible ? 12 : 0)
+        .offset(y: 0)
         .onPreferenceChange(ConversationComposerContentHeightPreferenceKey.self) { height in
             composerContentHeight = max(56, height)
         }
@@ -3075,7 +3082,7 @@ struct TypingIndicator: View {
                 LinearGradient(
                     colors: [
                         MacrodexTheme.textSecondary.opacity(0.4),
-                        MacrodexTheme.accent,
+                        MacrodexTheme.textPrimary.opacity(0.86),
                         MacrodexTheme.textSecondary.opacity(0.4),
                     ],
                     startPoint: UnitPoint(x: shimmerOffset - 0.3, y: 0.5),

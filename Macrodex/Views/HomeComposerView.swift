@@ -257,7 +257,7 @@ struct HomeComposerView: View {
         isScanningNutritionLabel = true
         defer { isScanningNutritionLabel = false }
         do {
-            let result = try await PiAgentRuntimeBackend.shared.scanNutritionLabel(imageData: data)
+            let result = try await MacrodexAgentRuntimeBackend.shared.scanNutritionLabel(imageData: data)
             scannedNutritionLabel = ScannedNutritionLabelDraft(result: result, photoData: data)
         } catch {
             errorMessage = error.localizedDescription
@@ -480,6 +480,9 @@ struct HomeComposerView: View {
                     )
                 )
                 RecentDirectoryStore.shared.record(path: project.cwd, for: project.serverId)
+                appModel.activateThread(threadKey)
+                await appModel.refreshSnapshot()
+                onThreadCreated(threadKey)
                 let additionalInputs = images
                     .compactMap(ConversationAttachmentSupport.prepareImage)
                     .map(\.userInput)
@@ -494,7 +497,6 @@ struct HomeComposerView: View {
                 )
                 try await appModel.startTurn(key: threadKey, payload: payload)
                 await appModel.refreshSnapshot()
-                onThreadCreated(threadKey)
             } catch {
                 errorMessage = error.localizedDescription
             }

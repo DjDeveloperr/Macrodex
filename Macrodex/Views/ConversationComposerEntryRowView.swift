@@ -2,6 +2,12 @@ import SwiftUI
 import UIKit
 
 struct ConversationComposerEntryRowView: View {
+    private enum Metrics {
+        static let controlSize: CGFloat = 40
+        static let inlineControlSize: CGFloat = 36
+        static let inputMinHeight: CGFloat = 40
+    }
+
     @Binding var showAttachMenu: Bool
     @Binding var inputText: String
     @Binding var isComposerFocused: Bool
@@ -67,13 +73,18 @@ struct ConversationComposerEntryRowView: View {
                     showAttachMenu = true
                 } label: {
                     Image(systemName: "plus")
-                        .font(MacrodexFont.styled(size: 17, weight: .semibold))
+                        .font(MacrodexFont.styled(size: 18, weight: .semibold))
                         .foregroundColor(MacrodexTheme.textPrimary)
-                        .frame(width: 36, height: 36)
+                        .frame(width: Metrics.controlSize, height: Metrics.controlSize)
                         .modifier(GlassCircleModifier())
                 }
                 .transition(.scale.combined(with: .opacity))
                 .accessibilityLabel("Add attachment")
+                .macrodexSimDeckElement(
+                    "Add attachment",
+                    id: "macrodex.composer.add-attachment",
+                    metadata: ["kind": "composer-control"]
+                )
             }
 
             HStack(spacing: 0) {
@@ -91,8 +102,13 @@ struct ConversationComposerEntryRowView: View {
                             .padding(.leading, 16)
                             .padding(.top, 10)
                             .allowsHitTesting(false)
-                    }
+                        }
                 }
+                .macrodexSimDeckElement(
+                    "Composer text input",
+                    id: "macrodex.composer.text-input",
+                    metadata: ["kind": "composer-input"]
+                )
 
                 if isFoodSearchMode && hasText {
                     Button {
@@ -101,7 +117,7 @@ struct ConversationComposerEntryRowView: View {
                         Image(systemName: "xmark.circle.fill")
                             .font(MacrodexFont.styled(size: 22))
                             .foregroundColor(MacrodexTheme.textSecondary)
-                            .frame(width: 36, height: 36)
+                            .frame(width: Metrics.inlineControlSize, height: Metrics.inlineControlSize)
                             .contentShape(Rectangle())
                     }
                     .padding(.trailing, 4)
@@ -111,11 +127,16 @@ struct ConversationComposerEntryRowView: View {
                         Image(systemName: "arrow.up.circle.fill")
                             .font(MacrodexFont.styled(size: 22))
                             .foregroundColor(MacrodexTheme.accent)
-                            .frame(width: 36, height: 36)
+                            .frame(width: Metrics.inlineControlSize, height: Metrics.inlineControlSize)
                             .contentShape(Rectangle())
                     }
                     .padding(.trailing, 4)
                     .accessibilityLabel("Send message")
+                    .macrodexSimDeckElement(
+                        "Send message",
+                        id: "macrodex.composer.send",
+                        metadata: ["kind": "composer-control"]
+                    )
                 } else if voiceManager.isRecording {
                     AudioWaveformView(level: voiceManager.audioLevel)
                         .frame(width: 48, height: 20)
@@ -124,7 +145,7 @@ struct ConversationComposerEntryRowView: View {
                         Image(systemName: "stop.circle.fill")
                             .font(MacrodexFont.styled(size: 22))
                             .foregroundColor(MacrodexTheme.accentStrong)
-                            .frame(width: 32, height: 32)
+                            .frame(width: Metrics.inlineControlSize, height: Metrics.inlineControlSize)
                             .contentShape(Rectangle())
                     }
                     .padding(.trailing, 4)
@@ -139,22 +160,32 @@ struct ConversationComposerEntryRowView: View {
                         Image(systemName: "mic.fill")
                             .font(MacrodexFont.styled(size: 15))
                             .foregroundColor(MacrodexTheme.textSecondary)
-                            .frame(width: 32, height: 32)
+                            .frame(width: Metrics.inlineControlSize, height: Metrics.inlineControlSize)
                             .contentShape(Rectangle())
                     }
                     .padding(.trailing, 4)
                     .accessibilityLabel("Start voice input")
+                    .macrodexSimDeckElement(
+                        "Start voice input",
+                        id: "macrodex.composer.voice",
+                        metadata: ["kind": "composer-control"]
+                    )
                 }
             }
-            .frame(minHeight: 36)
+            .frame(minHeight: Metrics.inputMinHeight)
             .modifier(GlassRoundedRectModifier(cornerRadius: 20))
+            .macrodexSimDeckElement(
+                "Composer input",
+                id: "macrodex.composer.input",
+                metadata: ["kind": "composer-input-row"]
+            )
 
             if isTurnActive {
                 Button(action: onInterrupt) {
                     Image(systemName: "stop.fill")
                         .font(MacrodexFont.styled(size: 13, weight: .semibold))
                         .foregroundColor(MacrodexTheme.textPrimary)
-                        .frame(width: 36, height: 36)
+                        .frame(width: Metrics.controlSize, height: Metrics.controlSize)
                         .modifier(GlassCircleModifier())
                 }
                 .transition(.move(edge: .trailing).combined(with: .opacity))
@@ -162,9 +193,9 @@ struct ConversationComposerEntryRowView: View {
             } else if showsFoodSearchButton && !voiceManager.isRecording && !voiceManager.isTranscribing {
                 Button(action: onToggleFoodSearchMode) {
                     Image(systemName: "magnifyingglass")
-                        .font(MacrodexFont.styled(size: 15, weight: .semibold))
+                        .font(MacrodexFont.styled(size: 16, weight: .semibold))
                         .foregroundColor(isFoodSearchMode ? MacrodexTheme.accent : MacrodexTheme.textPrimary)
-                        .frame(width: 36, height: 36)
+                        .frame(width: Metrics.controlSize, height: Metrics.controlSize)
                         .modifier(GlassCircleModifier())
                 }
                 .transition(.scale.combined(with: .opacity))
@@ -176,5 +207,10 @@ struct ConversationComposerEntryRowView: View {
         .padding(.horizontal, 12)
         .padding(.top, 6)
         .padding(.bottom, 6)
+        .macrodexSimDeckElement(
+            "Composer controls",
+            id: "macrodex.composer.controls",
+            metadata: ["kind": "composer-controls"]
+        )
     }
 }

@@ -357,7 +357,7 @@ enum FoodSearchAIResolver {
         return await withCheckedContinuation { continuation in
             let gate = FoodSearchTimeoutGate()
             let worker = Task {
-                let result = (try? await PiAgentRuntimeBackend.shared.rerankFoodSearch(
+                let result = (try? await MacrodexAgentRuntimeBackend.shared.rerankFoodSearch(
                     query: trimmed,
                     candidates: aiCandidates
                 )) ?? aiCandidates

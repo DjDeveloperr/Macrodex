@@ -2999,7 +2999,7 @@ int macrodex_command_bridge_run(const char *cmd, const char *cwd, char **output,
     }
     return codex_ios_host_spawn_run(simRunCmd, cwd, output, output_len);
 #else
-    codex_ios_set_output(@"Shell commands are not available in this Pi-only iOS build.\n", output, output_len);
+    codex_ios_set_output(@"Shell commands are not available in this iOS build.\n", output, output_len);
     return 127;
 #endif
 }

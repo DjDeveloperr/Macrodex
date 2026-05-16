@@ -25,6 +25,25 @@ final class StreamingRendererCoordinator {
         r.append(delta)
     }
 
+    func reconcileFullText(_ text: String, for itemId: String, finish: Bool = false) {
+        guard !text.isEmpty else { return }
+        let r = renderers[itemId] ?? makeRenderer(for: itemId)
+        if text.hasPrefix(r.rawText) {
+            let suffix = String(text.dropFirst(r.rawText.count))
+            if !suffix.isEmpty {
+                r.append(suffix)
+            }
+        } else if r.rawText != text {
+            r.setContent(text)
+        }
+        if finish {
+            r.finish()
+            if activeItemId == itemId {
+                activeItemId = nil
+            }
+        }
+    }
+
     // MARK: - Renderer access
 
     func hasRenderer(for itemId: String) -> Bool {

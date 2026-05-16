@@ -1,6 +1,6 @@
 import Foundation
 
-// Pi-only replacement for the former generated bridge.
+// Local agent replacement for the former generated bridge.
 // Keep these app-facing value types and overrideable bridge classes, but do
 // not import or call any external runtime symbols.
 
@@ -10,7 +10,7 @@ enum LocalBridgeError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unsupported(let operation):
-            return "\(operation) is only available through the Pi runtime."
+            return "\(operation) is only available through the Macrodex Agent runtime."
         }
     }
 }

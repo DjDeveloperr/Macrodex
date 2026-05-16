@@ -24,8 +24,10 @@ packages:
   Hairball:
     url: https://github.com/dnakov/hairball.git
     revision: cc97e4074a8981d65414c5610ebbef966fbda01a
-  PiJSC:
-    path: Packages/PiJSC
+  MacrodexAgent:
+    path: Packages/MacrodexAgent
+  SimDeckInspectorAgent:
+    path: Packages/SimDeckInspectorAgent
 
 targets:
   Macrodex:
@@ -61,8 +63,10 @@ targets:
       - sdk: HealthKit.framework
       - package: Hairball
         product: HairballUI
-      - package: PiJSC
-        product: PiJSC
+      - package: MacrodexAgent
+        product: MacrodexAgent
+      - package: SimDeckInspectorAgent
+        product: SimDeckInspectorAgent
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.dj.Macrodex

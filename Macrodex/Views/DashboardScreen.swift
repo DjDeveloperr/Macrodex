@@ -81,6 +81,11 @@ struct DashboardScreen: View {
                     dailyNoteCard
                     todayLogSection
                 }
+                .macrodexSimDeckPublishSwiftUIViewTree(
+                    "Macrodex Dashboard Content",
+                    id: "macrodex.swiftui.dashboard.content",
+                    maxDepth: 16
+                )
                 .padding(.horizontal, DashboardTone.sectionPadding)
                 .padding(.top, 12)
                 .padding(.bottom, 12)
@@ -231,15 +236,15 @@ struct DashboardScreen: View {
                 let bleed = dashboardKeyboardBlurBottomBleed
                 let overlayHeight = proxy.size.height + bleed
                 Rectangle()
-                    .fill(.ultraThinMaterial)
-                    .opacity(0.72 * keyboardOverlayProgress)
+                    .fill(.regularMaterial)
+                    .opacity(0.90 * keyboardOverlayProgress)
                     .frame(width: proxy.size.width, height: overlayHeight, alignment: .top)
                     .mask(
                         LinearGradient(
                             stops: [
                                 .init(color: .clear, location: 0.0),
-                                .init(color: .black.opacity(0.28), location: 0.18),
-                                .init(color: .black.opacity(0.76), location: 0.62),
+                                .init(color: .black.opacity(0.42), location: 0.16),
+                                .init(color: .black.opacity(0.90), location: 0.58),
                                 .init(color: .black, location: 1.0)
                             ],
                             startPoint: .top,
@@ -260,7 +265,7 @@ struct DashboardScreen: View {
     }
 
     private var dashboardContentBlurRadius: CGFloat {
-        3.6 * keyboardOverlayProgress
+        6.2 * keyboardOverlayProgress
     }
 
     private var dashboardKeyboardBlurBottomBleed: CGFloat {
@@ -278,6 +283,15 @@ struct DashboardScreen: View {
                 bottomInset: bottomInset,
                 focusRequestID: composerFocusRequestID,
                 onSend: onQuickComposerSend
+            )
+            .macrodexSimDeckElement(
+                "Dashboard composer",
+                id: "macrodex.dashboard.composer"
+            )
+            .macrodexSimDeckPublishSwiftUIViewTree(
+                "Macrodex Dashboard Composer",
+                id: "macrodex.swiftui.dashboard.composer",
+                maxDepth: 14
             )
             .padding(.horizontal, 12)
             .padding(.top, 6)
@@ -301,6 +315,7 @@ struct DashboardScreen: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Calories")
         .accessibilityValue("\(store.todayTotals.calories.formatted(.number.precision(.fractionLength(0)))) of \(store.goal.calories.formatted(.number.precision(.fractionLength(0)))) kilocalories, \(remainingLabel)")
+        .macrodexSimDeckElement("Calories", id: "macrodex.dashboard.calories")
     }
 
     @ViewBuilder
@@ -330,6 +345,7 @@ struct DashboardScreen: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Calorie progress")
         .accessibilityValue("\(Int(progressClamped * 100)) percent, \(remainingLabel)")
+        .macrodexSimDeckElement("Calorie progress", id: "macrodex.dashboard.calorie-progress")
     }
 
     private var macroSummary: some View {
@@ -341,6 +357,7 @@ struct DashboardScreen: View {
                 MacroProgressLine(title: "Fat", value: displayedTotals.fat, goal: store.goal.fat)
             }
         }
+        .macrodexSimDeckElement("Macros", id: "macrodex.dashboard.macros")
     }
 
     @ViewBuilder
@@ -395,6 +412,7 @@ struct DashboardScreen: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(DashboardTone.textSecondary)
             }
+            .macrodexSimDeckElement("Meal Log header", id: "macrodex.dashboard.meal-log.header")
 
             if dashboardMealSections.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {
@@ -411,6 +429,7 @@ struct DashboardScreen: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 12)
+                .macrodexSimDeckElement("Empty meal log", id: "macrodex.dashboard.meal-log.empty")
             } else {
                 VStack(spacing: 22) {
                     ForEach(dashboardMealSections, id: \.meal) { group in
@@ -441,10 +460,16 @@ struct DashboardScreen: View {
                                 }
                             }
                         }
+                        .macrodexSimDeckElement(
+                            group.meal.title,
+                            id: "macrodex.dashboard.meal.\(group.meal.rawValue)",
+                            metadata: ["kind": "meal-log-group"]
+                        )
                     }
                 }
             }
         }
+        .macrodexSimDeckElement("Meal Log", id: "macrodex.dashboard.meal-log")
     }
 
     @ViewBuilder
@@ -458,6 +483,7 @@ struct DashboardScreen: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .macrodexSimDeckElement("Summary", id: "macrodex.dashboard.summary")
         }
     }
 
@@ -642,7 +668,7 @@ struct DashboardScreen: View {
               !candidates.isEmpty,
               DashboardSummaryCache.canGenerateSummary(minimumAge: Self.dashboardInsightRefreshInterval),
               let payloadJSON = dashboardAIPayloadJSON(candidates: candidates),
-              let content = try? await PiAgentRuntimeBackend.shared.dashboardFoodInsights(payloadJSON: payloadJSON),
+              let content = try? await MacrodexAgentRuntimeBackend.shared.dashboardFoodInsights(payloadJSON: payloadJSON),
               let insight = DashboardAIInsightResponse.parse(content)
         else { return }
 
@@ -687,14 +713,31 @@ struct DashboardScreen: View {
         let remaining = remainingCalories.rounded()
         let goal = store.goal.calories.rounded()
         guard goal > 0 else { return nil }
+        let proteinDelta = (store.goal.protein - store.todayTotals.protein).rounded()
+        let carbDelta = (store.goal.carbs - store.todayTotals.carbs).rounded()
+        let fatDelta = (store.goal.fat - store.todayTotals.fat).rounded()
 
         if remaining > 0 {
-            return "\(remaining.cleanString) calories left today."
+            let macroFocus = [
+                proteinDelta > 0 ? "\(proteinDelta.cleanString)g protein" : nil,
+                carbDelta > 0 ? "\(carbDelta.cleanString)g carbs" : nil,
+                fatDelta > 0 ? "\(fatDelta.cleanString)g fat" : nil
+            ]
+            .compactMap { $0 }
+            .prefix(2)
+            .joined(separator: " and ")
+            if macroFocus.isEmpty {
+                return "\(remaining.cleanString) calories left today. Your macro targets are already covered."
+            }
+            return "\(remaining.cleanString) calories left today, with \(macroFocus) still open."
         }
         if remaining < 0 {
-            return "\((-remaining).cleanString) calories over today."
+            let proteinText = store.todayTotals.protein >= store.goal.protein
+                ? "protein is covered"
+                : "\(max(proteinDelta, 0).cleanString)g protein remains"
+            return "\((-remaining).cleanString) calories over today; \(proteinText)."
         }
-        return "You are exactly at your calorie goal today."
+        return "You are exactly at your calorie goal today; check macros before adding more."
     }
 
     private func dashboardAIPayloadJSON(candidates: [DashboardFoodSuggestion]) -> String? {
@@ -727,19 +770,20 @@ struct DashboardScreen: View {
         let loggedMeals = Set(store.todayLogs.map(\.mealType))
 
         for item in store.recentFoodMemories {
+            let meal = suggestedMeal(for: item, fallback: preferredMeal)
             guard !loggedFoodKeys.contains(Self.normalizedSuggestionKey(item.displayName)),
-                  shouldSuggestMeal(preferredMeal, loggedMeals: loggedMeals),
+                  shouldSuggestMeal(meal, loggedMeals: loggedMeals, source: .canonical),
                   shouldSuggestCalories(item.calories)
             else { continue }
-            let key = "\(preferredMeal.rawValue):\(Self.normalizedSuggestionKey(item.displayName))"
+            let key = "\(meal.rawValue):\(Self.normalizedSuggestionKey(item.displayName))"
             guard seen.insert(key).inserted else { continue }
             results.append(DashboardFoodSuggestion(
-                id: "canonical-\(item.id)-\(preferredMeal.rawValue)",
+                id: "canonical-\(item.id)-\(meal.rawValue)",
                 sourceID: item.id,
                 source: .canonical,
                 name: item.title,
                 detail: item.detail,
-                mealType: preferredMeal,
+                mealType: meal,
                 servingQuantity: item.defaultServingQty ?? 1,
                 servingUnit: item.defaultServingUnit ?? "serving",
                 servingWeight: item.defaultServingWeight,
@@ -757,7 +801,7 @@ struct DashboardScreen: View {
             let meals = hintedMeals.isEmpty ? [preferredMeal] : hintedMeals
             for meal in meals {
                 guard !loggedFoodKeys.contains(Self.normalizedSuggestionKey(food.name)),
-                      shouldSuggestMeal(meal, loggedMeals: loggedMeals),
+                      shouldSuggestMeal(meal, loggedMeals: loggedMeals, source: .standard),
                       shouldSuggestCalories(food.calories)
                 else { continue }
                 let key = "\(meal.rawValue):\(Self.normalizedSuggestionKey(food.name))"
@@ -814,12 +858,22 @@ struct DashboardScreen: View {
         return result
     }
 
-    private func shouldSuggestMeal(_ meal: CalorieMealType, loggedMeals: Set<CalorieMealType>) -> Bool {
+    private func shouldSuggestMeal(
+        _ meal: CalorieMealType,
+        loggedMeals: Set<CalorieMealType>,
+        source: DashboardSuggestionSource
+    ) -> Bool {
         guard !loggedMeals.contains(meal) else { return false }
         if meal == .other { return false }
         if meal == .drink { return remainingCalories <= 250 || CalorieMealType.currentDefault == .snack }
         if meal == .snack { return remainingCalories <= 500 || CalorieMealType.currentDefault == .snack }
+        if source == .canonical { return true }
         return meal == CalorieMealType.currentDefault || remainingCalories >= 450
+    }
+
+    private func suggestedMeal(for item: CanonicalFoodItem, fallback: CalorieMealType) -> CalorieMealType {
+        guard let meal = item.lastMealType, meal != .other else { return fallback }
+        return meal
     }
 
     private func shouldSuggestCalories(_ calories: Double) -> Bool {
@@ -844,7 +898,7 @@ struct DashboardScreen: View {
         let calorieFit = abs(suggestion.calories - target) / max(target, 1)
         let mealPenalty = suggestion.mealType == CalorieMealType.currentDefault ? 0.0 : 0.28
         let proteinBonus = min(suggestion.protein / 35, 1) * 0.12
-        let sourcePenalty = suggestion.source == .canonical ? 0.0 : 0.08
+        let sourcePenalty = suggestion.source == .canonical ? -0.18 : 0.08
         return calorieFit + mealPenalty + sourcePenalty - proteinBonus
     }
 
@@ -1332,12 +1386,30 @@ private struct WeeklyMacroWeekView: View {
                 .buttonStyle(.plain)
                 .disabled(isFuture)
                 .frame(maxWidth: .infinity)
+                .macrodexSimDeckElement(
+                    WeeklyMacroDayCell.accessibilityLabel(
+                        date: date,
+                        summary: summary(date)
+                    ),
+                    id: "macrodex.dashboard.weekday.\(Self.inspectorDateId(for: date))",
+                    metadata: ["kind": "weekly-macro-day"]
+                )
             }
         }
     }
 
     private var days: [Date] {
         (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: weekStart) }
+    }
+
+    private static func inspectorDateId(for date: Date) -> String {
+        let components = Calendar.current.dateComponents([.year, .month, .day], from: date)
+        return String(
+            format: "%04d-%02d-%02d",
+            components.year ?? 0,
+            components.month ?? 0,
+            components.day ?? 0
+        )
     }
 }
 
@@ -1392,6 +1464,10 @@ private struct WeeklyMacroDayCell: View {
     }
 
     private var accessibilityLabel: String {
+        Self.accessibilityLabel(date: date, summary: summary)
+    }
+
+    fileprivate static func accessibilityLabel(date: Date, summary: CalorieDaySummary) -> String {
         "\(date.formatted(.dateTime.weekday(.wide).month().day())), \(summary.totals.calories.cleanString) calories, protein \(summary.totals.protein.cleanString) grams, carbs \(summary.totals.carbs.cleanString) grams, fat \(summary.totals.fat.cleanString) grams"
     }
 }
@@ -1450,12 +1526,22 @@ private struct MealLogSection: View {
             .accessibilityLabel(meal.title)
             .accessibilityValue("\(items.count) item\(items.count == 1 ? "" : "s"), \(calories.cleanString) kilocalories, \(protein.cleanString) grams protein")
             .accessibilityHint("Opens meal details")
+            .macrodexSimDeckElement(
+                "\(meal.title) summary",
+                id: "macrodex.dashboard.meal.\(meal.rawValue).summary",
+                metadata: ["kind": "meal-log-summary"]
+            )
 
             VStack(spacing: 0) {
                 ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                     CalorieLogRow(item: item, store: store) {
                         onOpenItem(item)
                     }
+                    .macrodexSimDeckElement(
+                        item.name,
+                        id: "macrodex.dashboard.log-item.\(item.id)",
+                        metadata: ["kind": "meal-log-item"]
+                    )
                     if index < items.count - 1 {
                         Divider()
                             .overlay(DashboardTone.divider)
@@ -1475,7 +1561,7 @@ private enum DashboardSuggestionSource: String {
 }
 
 private enum DashboardSummaryCache {
-    private static let storageKey = "dashboard.aiSummaryCache.v1"
+    private static let storageKey = "dashboard.aiSummaryCache.v2"
     private static let legacyStorageKey = "dashboard.aiSummaryCache.legacy.v1"
 
     private struct Entry: Codable {
@@ -1586,6 +1672,11 @@ private struct MealSuggestionHeader: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(meal.title)
+        .macrodexSimDeckElement(
+            meal.title,
+            id: "macrodex.dashboard.meal.\(meal.rawValue).suggestion-header",
+            metadata: ["kind": "meal-suggestion-header"]
+        )
     }
 }
 
@@ -1631,6 +1722,11 @@ private struct DashboardSuggestionsSection: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
                     .contentShape(Rectangle())
+                    .macrodexSimDeckElement(
+                        suggestion.name,
+                        id: "macrodex.dashboard.suggestion.\(suggestion.id)",
+                        metadata: ["kind": "dashboard-suggestion"]
+                    )
 
                     if index < suggestions.count - 1 {
                         Divider()
@@ -4869,6 +4965,14 @@ private struct DashboardSectionTitle: View {
                     .foregroundStyle(DashboardTone.textSecondary)
             }
         }
+        .macrodexSimDeckElement(title, id: "macrodex.dashboard.section.\(inspectorTitleId)")
+    }
+
+    private var inspectorTitleId: String {
+        title
+            .lowercased()
+            .split { !$0.isLetter && !$0.isNumber }
+            .joined(separator: "-")
     }
 }
 
@@ -5022,6 +5126,18 @@ private struct MacroProgressLine: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
         .accessibilityValue("\(value.cleanString) grams of \(goal.cleanString) grams")
+        .macrodexSimDeckElement(
+            title,
+            id: "macrodex.dashboard.macro.\(inspectorTitleId)",
+            metadata: ["kind": "macro-progress-line"]
+        )
+    }
+
+    private var inspectorTitleId: String {
+        title
+            .lowercased()
+            .split { !$0.isLetter && !$0.isNumber }
+            .joined(separator: "-")
     }
 }
 
@@ -5465,6 +5581,7 @@ struct CanonicalFoodItem: Identifiable, Equatable {
     let defaultServingUnit: String?
     let defaultServingWeight: Double?
     let lastUsedAtMs: Int64?
+    let lastMealType: CalorieMealType?
 
     var title: String {
         brand.map { "\($0) \(displayName)" } ?? displayName
@@ -7418,7 +7535,16 @@ final class CalorieTrackerStore: ObservableObject {
             """
             SELECT id, canonical_name, display_name, brand, calories_kcal,
                    COALESCE(protein_g, 0), COALESCE(carbs_g, 0), COALESCE(fat_g, 0),
-                   default_serving_qty, default_serving_unit, default_serving_weight_g, last_used_at_ms
+                   default_serving_qty, default_serving_unit, default_serving_weight_g, last_used_at_ms,
+                   (
+                       SELECT fle.meal_type
+                       FROM food_log_items fli
+                       JOIN food_log_entries fle ON fle.id = fli.entry_id AND fle.deleted_at_ms IS NULL
+                       WHERE fli.deleted_at_ms IS NULL
+                         AND fli.canonical_food_id = canonical_food_items.id
+                       ORDER BY fli.logged_at_ms DESC
+                       LIMIT 1
+                   ) AS last_meal_type
             FROM canonical_food_items
             WHERE deleted_at_ms IS NULL AND \(whereClause)
             ORDER BY COALESCE(last_used_at_ms, updated_at_ms) DESC, use_count DESC, display_name COLLATE NOCASE
@@ -7438,7 +7564,8 @@ final class CalorieTrackerStore: ObservableObject {
                 defaultServingQty: sqliteOptionalDouble(statement, 8),
                 defaultServingUnit: sqliteOptionalText(statement, 9),
                 defaultServingWeight: sqliteOptionalDouble(statement, 10),
-                lastUsedAtMs: sqliteOptionalInt64(statement, 11)
+                lastUsedAtMs: sqliteOptionalInt64(statement, 11),
+                lastMealType: sqliteOptionalText(statement, 12).map(CalorieMealType.init(databaseValue:))
             )
         }
     }

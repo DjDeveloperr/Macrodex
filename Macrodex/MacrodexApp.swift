@@ -4,6 +4,9 @@ import SwiftUI
 import UIKit
 import UserNotifications
 import os
+#if DEBUG
+import SimDeckInspectorAgent
+#endif
 
 class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     private var pendingPushToken: Data?
@@ -34,9 +37,9 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         AgentRuntimeBootstrap.startAsync()
         OpenAIApiKeyStore.shared.applyToEnvironment()
         GoogleAIApiKeyStore.shared.applyToEnvironment()
-        // Pre-initialize Pi before SwiftUI accesses AppModel.shared.
+        // Pre-initialize Macrodex Agent before SwiftUI accesses AppModel.shared.
         DispatchQueue.global(qos: .userInitiated).async {
-            AppModel.prewarmPiRuntime()
+            AppModel.prewarmAgentRuntime()
         }
         UNUserNotificationCenter.current().delegate = self
         return true
@@ -140,6 +143,12 @@ struct MacrodexApp: App {
     @State private var themeManager = ThemeManager.shared
     @Environment(\.scenePhase) private var scenePhase
 
+    init() {
+        #if DEBUG
+        try? SimDeckInspectorAgent.shared.start()
+        #endif
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
@@ -148,6 +157,7 @@ struct MacrodexApp: App {
                 .environment(appRuntime)
                 .environment(voiceRuntime)
                 .environment(themeManager)
+                .macrodexSimDeckInspectableRoot()
                 .task {
                     await Task.yield()
                     appModel.start()
@@ -178,6 +188,43 @@ struct MacrodexApp: App {
                 break
             }
         }
+    }
+}
+
+extension View {
+    @ViewBuilder
+    func macrodexSimDeckInspectableRoot() -> some View {
+        #if DEBUG
+        simDeckInspectorTag("Macrodex Root", id: "macrodex.root")
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func macrodexSimDeckPublishSwiftUIViewTree(
+        _ name: String = "Macrodex SwiftUI Tree",
+        id: String = "macrodex.swiftui.root",
+        maxDepth: Int = 12
+    ) -> some View {
+        #if DEBUG
+        simDeckPublishSwiftUIViewTree(name, id: id, maxDepth: maxDepth)
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func macrodexSimDeckElement(
+        _ name: String,
+        id: String,
+        metadata: [String: String] = [:]
+    ) -> some View {
+        #if DEBUG
+        simDeckSwiftUIElement(name, id: id, metadata: metadata)
+        #else
+        self
+        #endif
     }
 }
 
@@ -266,6 +313,7 @@ struct ContentView: View {
 
             }
             .ignoresSafeArea(.container)
+            .macrodexSimDeckPublishSwiftUIViewTree(maxDepth: 6)
             .task {
                 if composerBottomInset <= 0, resolvedBottomInset > 0 {
                     composerBottomInset = resolvedBottomInset
@@ -409,6 +457,11 @@ private struct HomeNavigationView: View {
         } message: {
             Text(actionErrorMessage ?? "Unknown error")
         }
+        .macrodexSimDeckPublishSwiftUIViewTree(
+            "Macrodex Navigation Tree",
+            id: "macrodex.swiftui.navigation",
+            maxDepth: 8
+        )
     }
 
     private func validateRequiredChatGPTLoginIfNeeded() async {
@@ -939,6 +992,11 @@ private struct HomeNavigationView: View {
             },
             composerFocusRequestID: appState.homeComposerFocusRequestID
         )
+            .macrodexSimDeckPublishSwiftUIViewTree(
+                "Macrodex Dashboard Tree",
+                id: "macrodex.swiftui.dashboard",
+                maxDepth: 8
+            )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -1779,15 +1837,17 @@ struct DashboardQuickComposerBar: View {
 
     private func updateKeyboardLift(notification: Notification?) {
         guard keyboardVisible,
-              let keyboardTop,
-              composerFrame != .zero
+              let keyboardTop
         else {
             setKeyboardLift(0, notification: notification)
             return
         }
 
-        let desiredGap: CGFloat = 8
-        let lift = max(0, composerFrame.maxY + desiredGap - keyboardTop)
+        let desiredGap: CGFloat = 5
+        let frameMaxY = composerFrame == .zero
+            ? UIScreen.main.bounds.maxY - max(bottomInset, 0) - composerBottomPadding
+            : composerFrame.maxY
+        let lift = max(0, frameMaxY + desiredGap - keyboardTop)
         setKeyboardLift(lift, notification: notification)
     }
 
@@ -2123,7 +2183,7 @@ struct DashboardQuickComposerBar: View {
         isScanningNutritionLabel = true
         defer { isScanningNutritionLabel = false }
         do {
-            let result = try await PiAgentRuntimeBackend.shared.scanNutritionLabel(imageData: data)
+            let result = try await MacrodexAgentRuntimeBackend.shared.scanNutritionLabel(imageData: data)
             scannedNutritionLabel = DashboardScannedNutritionLabelDraft(result: result, photoData: data)
         } catch {
             errorMessage = error.localizedDescription

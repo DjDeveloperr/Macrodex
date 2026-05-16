@@ -174,6 +174,11 @@ struct ConversationComposerContentView: View {
 
             }
         }
+        .macrodexSimDeckElement(
+            "Composer content",
+            id: "macrodex.composer.content",
+            metadata: ["kind": "composer-content"]
+        )
     }
 }
 

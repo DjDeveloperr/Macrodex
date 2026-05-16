@@ -1,6 +1,9 @@
 import Observation
 import SwiftUI
 import UIKit
+#if DEBUG
+import SimDeckInspectorAgent
+#endif
 
 private final class DrawerDisplayLinkTarget {
     private let handler: (CADisplayLink) -> Void
@@ -342,6 +345,7 @@ struct AppDrawerContainer<Drawer: View, Content: View>: View {
                 .frame(width: 0, height: 0)
                 .allowsHitTesting(false)
             }
+            .macrodexDrawerSimDeckPublishSwiftUIViewTree()
             .contentShape(Rectangle())
             .onAppear {
                 drawerProgress = controller.isOpen ? 1 : 0
@@ -519,5 +523,16 @@ struct AppDrawerContainer<Drawer: View, Content: View>: View {
             try? await Task.sleep(for: DrawerController.settleDuration)
             suppressContentHitTesting = false
         }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func macrodexDrawerSimDeckPublishSwiftUIViewTree() -> some View {
+        #if DEBUG
+        simDeckPublishSwiftUIViewTree("Macrodex Drawer Tree", id: "macrodex.swiftui.drawer", maxDepth: 8)
+        #else
+        self
+        #endif
     }
 }

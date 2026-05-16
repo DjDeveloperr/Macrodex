@@ -409,16 +409,18 @@ private struct ConversationTimelineItemRow: View, Equatable {
 
     static func == (lhs: ConversationTimelineItemRow, rhs: ConversationTimelineItemRow) -> Bool {
         let isAssistant = lhs.item.isAssistantItem
-        // For assistant rows: the StreamingRendererCoordinator owns the
-        // streaming→finished lifecycle.  Skip digest, richDetail, AND
-        // isStreamingMessage so the bubble body never re-evaluates when
-        // a tool call arrives and a new assistant message takes over as
-        // the "streaming" item.  Re-rendering the bubble would recreate
-        // StreamingMarkdownContentView and replay the token reveal.
+        let assistantCanReuseBody = isAssistant
+            && lhs.isStreamingMessage
+            && rhs.isStreamingMessage
+            && lhs.item.id == rhs.item.id
+        // For an actively streaming assistant row, the renderer owns token
+        // updates so digest churn should not rebuild the bubble on every delta.
+        // Once streaming flips off, or finalized text changes, force a rebuild
+        // so the static row cannot stay pinned to a partial renderer snapshot.
         let result = lhs.item.id == rhs.item.id &&
-            (isAssistant || lhs.item.renderDigest == rhs.item.renderDigest) &&
+            (assistantCanReuseBody || lhs.item.renderDigest == rhs.item.renderDigest) &&
             (isAssistant || lhs.shouldPreserveRichDetail == rhs.shouldPreserveRichDetail) &&
-            (isAssistant || lhs.isStreamingMessage == rhs.isStreamingMessage) &&
+            (assistantCanReuseBody || lhs.isStreamingMessage == rhs.isStreamingMessage) &&
             lhs.serverId == rhs.serverId &&
             lhs.agentDirectoryVersion == rhs.agentDirectoryVersion &&
             lhs.isPreferredExpandedCommandRow == rhs.isPreferredExpandedCommandRow &&
@@ -440,7 +442,7 @@ private struct ConversationTimelineItemRow: View, Equatable {
         case .codeReview(let data):
             return AnyView(ConversationCodeReviewRow(data: data))
         case .reasoning(let data):
-            return AnyView(ConversationReasoningRow(data: data))
+            return AnyView(ConversationReasoningRow(data: data, isLive: isLiveTurn))
         case .todoList(let data):
             return AnyView(ConversationTodoListRow(data: data))
         case .proposedPlan(let data):
@@ -1232,23 +1234,298 @@ private struct ExplorationDisplayEntry: Identifiable {
 
 private struct ConversationReasoningRow: View {
     let data: ConversationReasoningData
+    let isLive: Bool
+    @Environment(DrawerController.self) private var drawerController
+    @State private var selectedClause: ReasoningClause?
 
     var body: some View {
-        HStack(alignment: .top, spacing: 0) {
-            Text(reasoningText)
-                .macrodexFont(.footnote)
-                .italic()
-                .foregroundColor(MacrodexTheme.textSecondary)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Spacer(minLength: 20)
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(clauses) { clause in
+                reasoningClauseRow(clause)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 2)
+        .sheet(item: $selectedClause) { clause in
+            ReasoningClauseDetailSheet(clause: clause)
+                .presentationDetents([.medium])
+                .presentationDragIndicator(.visible)
         }
     }
 
-    private var reasoningText: String {
+    private var rawReasoningText: String {
         (data.summary + data.content)
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             .joined(separator: "\n\n")
+    }
+
+    private var clauses: [ReasoningClause] {
+        ReasoningClauseParser.clauses(from: rawReasoningText)
+    }
+
+    @ViewBuilder
+    private func reasoningClauseRow(_ clause: ReasoningClause) -> some View {
+        Button {
+            guard !drawerController.shouldSuppressContentInteractions else { return }
+            selectedClause = clause
+        } label: {
+            ThinkingShimmerLabel(
+                text: clause.title,
+                isActive: isLive && clause.isLatest,
+                fontSize: MacrodexFont.conversationBodyPointSize
+            )
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .accessibilityHint("Shows thinking details")
+        }
+        .buttonStyle(.plain)
+        .padding(.vertical, 4)
+    }
+}
+
+private struct ThinkingShimmerLabel: View {
+    let text: String
+    let isActive: Bool
+    var fontSize: CGFloat = 13
+    @State private var shimmerOffset: CGFloat = -1
+
+    var body: some View {
+        Group {
+            if isActive {
+                Text(text)
+                    .macrodexFont(size: fontSize, weight: .medium)
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [
+                                MacrodexTheme.textSecondary.opacity(0.42),
+                                MacrodexTheme.textPrimary.opacity(0.9),
+                                MacrodexTheme.textSecondary.opacity(0.42),
+                            ],
+                            startPoint: UnitPoint(x: shimmerOffset - 0.3, y: 0.5),
+                            endPoint: UnitPoint(x: shimmerOffset + 0.3, y: 0.5)
+                        )
+                    )
+            } else {
+                Text(text)
+                    .macrodexFont(size: fontSize, weight: .medium)
+                    .foregroundColor(MacrodexTheme.textSystem)
+            }
+        }
+        .animation(isActive ? .easeInOut(duration: 1.5).repeatForever(autoreverses: false) : nil, value: shimmerOffset)
+        .onAppear {
+            if isActive {
+                shimmerOffset = 2
+            }
+        }
+        .onChange(of: isActive) { _, active in
+            shimmerOffset = active ? 2 : -1
+        }
+    }
+}
+
+private struct ReasoningClauseDetailSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let clause: ReasoningClause
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(clause.title)
+                        .macrodexFont(.headline, weight: .semibold)
+                        .foregroundColor(MacrodexTheme.textPrimary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+
+                    if clause.body.isEmpty {
+                        Text("No details available")
+                            .macrodexFont(.callout)
+                            .foregroundColor(MacrodexTheme.textSecondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        MacrodexMarkdownView(
+                            markdown: clause.body,
+                            style: .content,
+                            bodySize: 13,
+                            codeSize: 12
+                        )
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .padding(16)
+            }
+            .background(MacrodexTheme.backgroundGradient.ignoresSafeArea())
+            .navigationTitle("Thinking")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct ReasoningClause: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let body: String
+    let isLatest: Bool
+}
+
+private enum ReasoningClauseParser {
+    static func clauses(from text: String) -> [ReasoningClause] {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            return []
+        }
+
+        let parsedClauses = inlineMarkdownTitleClauses(from: normalized)
+        let clauses = parsedClauses.isEmpty ? lineHeadingClauses(from: normalized) : parsedClauses
+
+        return finalizedClauses(clauses.isEmpty ? [(titleExcerpt(from: normalized), normalized)] : clauses)
+    }
+
+    private static func inlineMarkdownTitleClauses(from text: String) -> [(title: String, body: String)] {
+        guard let regex = try? NSRegularExpression(pattern: #"\*\*([^\n*]{1,96})\*\*\s*[:\-–—]?"#) else {
+            return []
+        }
+        let matches = regex.matches(
+            in: text,
+            range: NSRange(text.startIndex..<text.endIndex, in: text)
+        ).compactMap { match -> (range: Range<String.Index>, title: String)? in
+            guard let range = Range(match.range(at: 0), in: text),
+                  let titleRange = Range(match.range(at: 1), in: text) else {
+                return nil
+            }
+            let title = stripMarkdown(from: String(text[titleRange]))
+            guard isPlausibleTitle(title) else { return nil }
+            return (range, title)
+        }
+
+        guard !matches.isEmpty else { return [] }
+
+        var clauses: [(title: String, body: String)] = []
+        let leading = String(text[..<matches[0].range.lowerBound])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !leading.isEmpty {
+            clauses.append((titleExcerpt(from: leading), leading))
+        }
+
+        for index in matches.indices {
+            let match = matches[index]
+            let bodyStart = match.range.upperBound
+            let bodyEnd = matches.indices.contains(index + 1) ? matches[index + 1].range.lowerBound : text.endIndex
+            let body = String(text[bodyStart..<bodyEnd])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            clauses.append((match.title, body))
+        }
+
+        return clauses
+    }
+
+    private static func lineHeadingClauses(from text: String) -> [(title: String, body: String)] {
+        var clauses: [(title: String, bodyLines: [String])] = []
+        var currentTitle: String?
+        var currentBody: [String] = []
+
+        func flush() {
+            guard let title = currentTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !title.isEmpty else { return }
+            clauses.append((title: title, bodyLines: currentBody))
+            currentTitle = nil
+            currentBody = []
+        }
+
+        for rawLine in text.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else {
+                if currentTitle != nil, !currentBody.isEmpty {
+                    currentBody.append("")
+                }
+                continue
+            }
+            if let parsed = parseHeadingLine(line) {
+                flush()
+                currentTitle = parsed.title
+                currentBody = parsed.remainder.isEmpty ? [] : [parsed.remainder]
+            } else if currentTitle == nil {
+                let title = titleExcerpt(from: line)
+                currentTitle = title
+                let remainder = line == title ? "" : line
+                currentBody = remainder.isEmpty ? [] : [remainder]
+            } else {
+                currentBody.append(rawLine)
+            }
+        }
+        flush()
+
+        return clauses.map {
+            ($0.title, $0.bodyLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+    }
+
+    private static func finalizedClauses(_ clauses: [(title: String, body: String)]) -> [ReasoningClause] {
+        clauses.enumerated().map { index, clause in
+            let title = stripMarkdown(from: clause.title)
+            let body = clause.body.trimmingCharacters(in: .whitespacesAndNewlines)
+            return ReasoningClause(
+                id: "\(index)-\(title)",
+                title: title.isEmpty ? "Thinking" : title,
+                body: body,
+                isLatest: index == clauses.count - 1
+            )
+        }
+    }
+
+    private static func isPlausibleTitle(_ title: String) -> Bool {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 96, !trimmed.contains("\n") else { return false }
+        let wordCount = trimmed.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.count
+        return wordCount <= 12
+    }
+
+    private static func parseHeadingLine(_ line: String) -> (title: String, remainder: String)? {
+        if line.hasPrefix("#") {
+            let title = line.drop(while: { $0 == "#" || $0 == " " })
+            if !title.isEmpty {
+                return (String(title), "")
+            }
+        }
+
+        for marker in ["**", "__"] {
+            guard line.hasPrefix(marker),
+                  let closing = line.dropFirst(marker.count).range(of: marker) else { continue }
+            let titleStart = line.index(line.startIndex, offsetBy: marker.count)
+            let title = String(line[titleStart..<closing.lowerBound])
+            let after = line[closing.upperBound...]
+                .trimmingCharacters(in: CharacterSet(charactersIn: " :-\t"))
+            return (title, after)
+        }
+
+        return nil
+    }
+
+    private static func stripMarkdown(from text: String) -> String {
+        text.replacingOccurrences(of: "**", with: "")
+            .replacingOccurrences(of: "__", with: "")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "# \t\n\r"))
+    }
+
+    private static func titleExcerpt(from text: String) -> String {
+        let compact = stripMarkdown(from: text)
+            .replacingOccurrences(of: "\n", with: " ")
+        if let sentenceEnd = compact.firstIndex(where: { ".?!".contains($0) }) {
+            return String(compact[...sentenceEnd]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if compact.count <= 72 { return compact }
+        return String(compact.prefix(69)).trimmingCharacters(in: .whitespacesAndNewlines) + "..."
     }
 }
 

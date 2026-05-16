@@ -13,18 +13,18 @@ protocol AgentRuntimeBackend: AnyObject, Sendable {
 
 enum AgentRuntimeBootstrap {
     static func startAsync() {
-        PiAgentRuntimeBackend.shared.startAsync()
+        MacrodexAgentRuntimeBackend.shared.startAsync()
     }
 
     static func waitUntilReady() async {
-        await PiAgentRuntimeBackend.shared.waitUntilReady()
+        await MacrodexAgentRuntimeBackend.shared.waitUntilReady()
     }
 
     static func defaultCwd() async -> String {
-        await PiAgentRuntimeBackend.shared.defaultCwd()
+        await MacrodexAgentRuntimeBackend.shared.defaultCwd()
     }
 
     static func prewarm() {
-        PiAgentRuntimeBackend.shared.prewarm()
+        MacrodexAgentRuntimeBackend.shared.prewarm()
     }
 }
