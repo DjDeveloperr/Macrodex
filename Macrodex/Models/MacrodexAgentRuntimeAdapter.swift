@@ -3143,9 +3143,12 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
             appendReasoningDelta(delta, itemID: itemID, key: key, turnID: turnID)
         case "provider.reasoning_summary_text.done":
             let text = event.payload["text"]?.stringValue ?? event.payload["delta"]?.stringValue ?? ""
-            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             let itemID = event.payload["item_id"]?.stringValue
-            reconcileReasoningText(text, itemID: itemID, key: key, turnID: turnID)
+            if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                finishReasoningText(itemID: itemID, key: key, turnID: turnID)
+            } else {
+                reconcileReasoningText(text, itemID: itemID, key: key, turnID: turnID)
+            }
         case "message.delta":
             guard let delta = event.payload["delta"]?.stringValue, !delta.isEmpty else { return }
             guard lockedThread(threadId: key.threadId)?.receivedProviderDelta != true else { return }
@@ -3330,6 +3333,16 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
         lock.unlock()
 
         emit(.threadItemChanged(key: key, item: item, sessionSummary: sessionSummary(record)))
+        finishReasoningText(itemID: providerItemID, key: key, turnID: turnID)
+    }
+
+    private func finishReasoningText(
+        itemID providerItemID: String?,
+        key: ThreadKey,
+        turnID: String
+    ) {
+        let itemID = Self.reasoningItemID(providerItemID: providerItemID, turnID: turnID)
+        emit(.threadStreamingDelta(key: key, itemId: itemID, kind: .reasoningText, text: ""))
     }
 
     private func upsertToolCall(

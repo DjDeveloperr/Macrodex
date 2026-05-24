@@ -5,6 +5,7 @@ struct ConversationComposerTextView: UIViewRepresentable {
     @Binding var text: String
     @Binding var isFocused: Bool
     let onPasteImage: (UIImage) -> Void
+    let onCommandEnter: () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -30,6 +31,7 @@ struct ConversationComposerTextView: UIViewRepresentable {
         textView.accessibilityLabel = "Message"
         textView.accessibilityHint = "Type a prompt or food log request"
         textView.onPasteImage = onPasteImage
+        textView.onCommandEnter = onCommandEnter
         textView.text = text
         context.coordinator.applyStyling(to: textView)
         context.coordinator.updateScrollState(for: textView)
@@ -39,6 +41,7 @@ struct ConversationComposerTextView: UIViewRepresentable {
     func updateUIView(_ uiView: PasteAwareComposerUITextView, context: Context) {
         context.coordinator.parent = self
         uiView.onPasteImage = onPasteImage
+        uiView.onCommandEnter = onCommandEnter
         context.coordinator.applyStyling(to: uiView)
 
         if uiView.text != text, uiView.markedTextRange == nil {
@@ -162,6 +165,17 @@ struct ConversationComposerTextView: UIViewRepresentable {
 
 final class PasteAwareComposerUITextView: UITextView {
     var onPasteImage: ((UIImage) -> Void)?
+    var onCommandEnter: (() -> Void)?
+
+    override var keyCommands: [UIKeyCommand]? {
+        let sendCommand = UIKeyCommand(
+            input: "\r",
+            modifierFlags: .command,
+            action: #selector(handleCommandEnter),
+            discoverabilityTitle: "Send Message"
+        )
+        return (super.keyCommands ?? []) + [sendCommand]
+    }
 
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         if action == #selector(paste(_:)), UIPasteboard.general.hasImages {
@@ -176,5 +190,9 @@ final class PasteAwareComposerUITextView: UITextView {
             return
         }
         super.paste(sender)
+    }
+
+    @objc private func handleCommandEnter(_ sender: UIKeyCommand) {
+        onCommandEnter?()
     }
 }

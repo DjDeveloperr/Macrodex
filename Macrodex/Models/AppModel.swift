@@ -47,6 +47,7 @@ final class AppModel {
     private(set) var snapshotRevision: UInt64 = 0
     private(set) var lastError: String?
     private(set) var composerPrefillRequest: ComposerPrefillRequest?
+    private(set) var reasoningActivityRevision: UInt64 = 0
 
     @ObservationIgnored private var subscription: AppStoreSubscription?
     @ObservationIgnored private var updateTask: Task<Void, Never>?
@@ -63,6 +64,7 @@ final class AppModel {
     @ObservationIgnored private var pendingCommandRowMutations: [String: PendingCommandRowMutation] = [:]
     @ObservationIgnored private var pendingCommandRowMutationTask: Task<Void, Never>?
     @ObservationIgnored private var cachedThreadSnapshots: [ThreadKey: AppThreadSnapshot] = [:]
+    @ObservationIgnored private var streamingReasoningItemIDsByThread: [ThreadKey: Set<String>] = [:]
 
     init(
         backend: (any AgentRuntimeBackend)? = nil,
@@ -409,6 +411,9 @@ final class AppModel {
                 agentDirectoryVersion: agentDirectoryVersion
             )
         case .threadMetadataChanged(let state, let sessionSummary, let agentDirectoryVersion):
+            if !sessionSummary.hasActiveTurn {
+                clearStreamingReasoningItems(for: state.key)
+            }
             if shouldBatchLiveThreadStateUpdate(for: state.key) {
                 enqueueThreadStateUpdate(
                     state,
@@ -437,6 +442,9 @@ final class AppModel {
                     finish: true
                 )
             }
+            if !item.isReasoningItem {
+                clearStreamingReasoningItems(for: key)
+            }
             // Reducer piggybacks the refreshed per-thread summary on every
             // item change, so the home dashboard's session-summary driven
             // fields (stats, last tool label, etc.) stay in sync with the
@@ -445,10 +453,18 @@ final class AppModel {
         case .threadStreamingDelta(let key, let itemId, let kind, let text):
             if kind == .assistantText {
                 StreamingRendererCoordinator.shared.appendDelta(text, for: itemId)
+            } else if kind == .reasoningText {
+                if text.isEmpty {
+                    setStreamingReasoningItem(itemId, for: key, isStreaming: false)
+                } else {
+                    setOnlyStreamingReasoningItem(itemId, for: key)
+                    scheduleThreadSnapshotRefresh(for: key)
+                }
             } else {
                 scheduleThreadSnapshotRefresh(for: key)
             }
         case .threadRemoved(let key, let agentDirectoryVersion):
+            clearStreamingReasoningItems(for: key)
             removeThreadSnapshot(for: key, agentDirectoryVersion: agentDirectoryVersion)
         case .activeThreadChanged(let key):
             updateActiveThread(key)
@@ -483,6 +499,40 @@ final class AppModel {
         case .realtimeClosed:
             await refreshSnapshot()
         }
+    }
+
+    func streamingReasoningItemIDs(for key: ThreadKey) -> Set<String> {
+        _ = reasoningActivityRevision
+        return streamingReasoningItemIDsByThread[key] ?? []
+    }
+
+    private func setOnlyStreamingReasoningItem(_ itemID: String, for key: ThreadKey) {
+        let next = Set([itemID])
+        guard streamingReasoningItemIDsByThread[key] != next else { return }
+        streamingReasoningItemIDsByThread[key] = next
+        reasoningActivityRevision &+= 1
+    }
+
+    private func setStreamingReasoningItem(_ itemID: String, for key: ThreadKey, isStreaming: Bool) {
+        var current = streamingReasoningItemIDsByThread[key] ?? []
+        let changed: Bool
+        if isStreaming {
+            changed = current.insert(itemID).inserted
+        } else {
+            changed = current.remove(itemID) != nil
+        }
+        guard changed else { return }
+        if current.isEmpty {
+            streamingReasoningItemIDsByThread.removeValue(forKey: key)
+        } else {
+            streamingReasoningItemIDsByThread[key] = current
+        }
+        reasoningActivityRevision &+= 1
+    }
+
+    private func clearStreamingReasoningItems(for key: ThreadKey) {
+        guard streamingReasoningItemIDsByThread.removeValue(forKey: key) != nil else { return }
+        reasoningActivityRevision &+= 1
     }
 
     private func refreshThreadSnapshot(key: ThreadKey) async {
@@ -1793,6 +1843,13 @@ final class AppModel {
         }
 
         return snapshot
+    }
+}
+
+private extension HydratedConversationItem {
+    var isReasoningItem: Bool {
+        if case .reasoning = content { return true }
+        return false
     }
 }
 

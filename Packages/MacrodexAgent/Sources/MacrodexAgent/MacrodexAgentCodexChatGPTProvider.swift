@@ -528,6 +528,17 @@ public final class MacrodexAgentCodexChatGPTProvider: MacrodexAgentStreamingProv
                     "delta": .string(delta)
                 ]
             )
+        case "response.reasoning_summary_text.done":
+            let text = object["text"] as? String ?? object["delta"] as? String ?? ""
+            return MacrodexAgentProviderStreamEvent(
+                type: "reasoning_summary_text.done",
+                providerID: providerRequest.providerID,
+                threadID: providerRequest.threadID,
+                payload: [
+                    "item_id": .string(object["item_id"] as? String ?? "reasoning"),
+                    "text": .string(text)
+                ]
+            )
         case "response.output_item.done":
             guard let item = object["item"] as? [String: Any] else {
                 return nil

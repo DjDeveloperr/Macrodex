@@ -3,6 +3,7 @@ import PhotosUI
 import SQLite3
 import SwiftUI
 import UIKit
+import WidgetKit
 
 private enum DashboardTone {
     static let bg = Color(uiColor: .systemBackground)
@@ -320,7 +321,9 @@ struct DashboardScreen: View {
 
     @ViewBuilder
     private var remainingStatusText: some View {
-        if remainingCalories < 0 {
+        if isNearCalorieGoal {
+            EmptyView()
+        } else if remainingCalories < 0 {
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(overCaloriesText)
                     .foregroundStyle(DashboardTone.danger)
@@ -491,6 +494,10 @@ struct DashboardScreen: View {
         store.goal.calories - store.todayTotals.calories
     }
 
+    private var isNearCalorieGoal: Bool {
+        abs(remainingCalories) <= 20
+    }
+
     private var displayedCalories: Double {
         dashboardMetricsAreRevealed ? store.todayTotals.calories : 0
     }
@@ -500,6 +507,9 @@ struct DashboardScreen: View {
     }
 
     private var remainingLabel: String {
+        if isNearCalorieGoal {
+            return "near goal"
+        }
         if remainingCalories >= 0 {
             return "\(remainingCalories.formatted(.number.precision(.fractionLength(0)))) left"
         }
@@ -3172,14 +3182,18 @@ private struct LibrarySearchScreen: View {
     @State private var editor: LibrarySearchEditor?
     @State private var showManualQuickAdd = false
 
+    private var scoredLibraryResults: [(item: CalorieLibraryItem, score: Int)] {
+        FoodSearchSupport.scoredLibraryItems(store.libraryItems, query: query)
+    }
+
     private var libraryResults: [CalorieLibraryItem] {
-        store.libraryItems.filter { Self.matches(query, values: [$0.name, $0.brand, $0.kind, $0.sourceTitle, $0.sourceURL] + $0.aliases) }
+        scoredLibraryResults.map(\.item)
     }
 
     private var templateResults: [MealTemplate] {
         store.mealTemplates.filter { template in
             let linkedNames = template.libraryItemIDs.compactMap { id in store.libraryItems.first(where: { $0.id == id })?.name }
-            return Self.matches(query, values: [template.name] + linkedNames)
+            return FoodSearchSupport.matches(query, values: [template.name] + linkedNames)
         }
     }
 
@@ -3194,28 +3208,29 @@ private struct LibrarySearchScreen: View {
     }
 
     private var standardResults: [ComposerFoodSearchResult] {
-        StandardFoodDatabase.matches(query: query, limit: 12).map { food, score in
-            ComposerFoodSearchResult(
-                id: "standard-\(food.id)",
-                title: food.name,
-                detail: food.detail,
-                insertText: food.name,
-                servingQuantity: food.servingQuantity,
-                servingUnit: food.servingUnit,
-                servingWeight: food.servingWeight,
-                calories: food.calories,
-                protein: food.protein,
-                carbs: food.carbs,
-                fat: food.fat,
-                source: "Foundation food",
-                notes: "Built-in common food estimate",
-                confidence: LibrarySearchScreen.confidence(from: score)
-            )
-        }
+        FoodSearchSupport.standardSuggestions(
+            query: query,
+            excludingLibraryItems: libraryResults,
+            excludingCanonicalItems: visibleFoodMemoryResults,
+            excludingSuggestions: []
+        )
+    }
+
+    private var visibleFoodMemoryResults: [CanonicalFoodItem] {
+        FoodSearchSupport.visibleCanonicalItems(foodMemoryResults, excludingLibraryItems: libraryResults)
+    }
+
+    private var visibleAIResults: [ComposerFoodSearchResult] {
+        FoodSearchSupport.filteredSuggestions(
+            aiFoodResults,
+            excludingLibraryItems: libraryResults,
+            excludingCanonicalItems: visibleFoodMemoryResults,
+            excludingSuggestions: standardResults
+        )
     }
 
     private var hasAnySearchResults: Bool {
-        !libraryResults.isEmpty || !templateResults.isEmpty || !foodMemoryResults.isEmpty || !standardResults.isEmpty || !aiFoodResults.isEmpty
+        !libraryResults.isEmpty || !templateResults.isEmpty || !visibleFoodMemoryResults.isEmpty || !standardResults.isEmpty || !visibleAIResults.isEmpty
     }
 
     var body: some View {
@@ -3241,16 +3256,7 @@ private struct LibrarySearchScreen: View {
                     if !libraryResults.isEmpty {
                         Section("Foods & Recipes") {
                             ForEach(libraryResults) { item in
-                                if mode == .quickAdd {
-                                    quickAddLibraryRow(item)
-                                } else {
-                                    Button {
-                                        editor = .libraryItem(item)
-                                    } label: {
-                                        libraryResultRow(item)
-                                    }
-                                    .buttonStyle(.plain)
-                                }
+                                quickAddLibraryRow(item)
                             }
                         }
                     }
@@ -3258,29 +3264,15 @@ private struct LibrarySearchScreen: View {
                     if !templateResults.isEmpty, mode == .library {
                         Section("Meal Templates") {
                             ForEach(templateResults) { template in
-                                Button {
-                                    editor = .mealTemplate(template)
-                                } label: {
-                                    templateResultRow(template)
-                                }
-                                .buttonStyle(.plain)
+                                templateActionRow(template)
                             }
                         }
                     }
 
-                    if !foodMemoryResults.isEmpty {
+                    if !visibleFoodMemoryResults.isEmpty {
                         Section("Food Memory") {
-                            ForEach(foodMemoryResults) { item in
-                                if mode == .quickAdd {
-                                    quickAddCanonicalRow(item)
-                                } else {
-                                    Button {
-                                        editor = .recentFood(item)
-                                    } label: {
-                                        foodMemoryResultRow(item)
-                                    }
-                                    .buttonStyle(.plain)
-                                }
+                            ForEach(visibleFoodMemoryResults) { item in
+                                quickAddCanonicalRow(item)
                             }
                         }
                     }
@@ -3293,9 +3285,9 @@ private struct LibrarySearchScreen: View {
                         }
                     }
 
-                    if !aiFoodResults.isEmpty {
+                    if !visibleAIResults.isEmpty {
                         Section("Web Suggestions") {
-                            ForEach(aiFoodResults) { item in
+                            ForEach(visibleAIResults) { item in
                                 quickAddFoodSuggestionRow(item)
                             }
                         }
@@ -3389,6 +3381,32 @@ private struct LibrarySearchScreen: View {
             }
         }
         .padding(.vertical, 4)
+    }
+
+    private func templateActionRow(_ template: MealTemplate) -> some View {
+        HStack(spacing: 12) {
+            Button {
+                editor = .mealTemplate(template)
+            } label: {
+                templateResultRow(template)
+            }
+            .buttonStyle(.plain)
+
+            Spacer(minLength: 0)
+
+            Button {
+                Task {
+                    await store.logMealTemplate(template.id, mealType: .currentDefault)
+                    dismiss()
+                }
+            } label: {
+                Image(systemName: "plus.circle.fill")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(DashboardTone.accent)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Quick add \(template.name)")
+        }
     }
 
     private func foodMemoryResultRow(_ item: CanonicalFoodItem) -> some View {
@@ -3554,7 +3572,7 @@ private struct LibrarySearchScreen: View {
         guard query.count >= 2,
               libraryResults.isEmpty,
               templateResults.isEmpty,
-              foodMemoryResults.isEmpty,
+              visibleFoodMemoryResults.isEmpty,
               standardResults.isEmpty
         else {
             isSearchingAI = false
@@ -3585,25 +3603,6 @@ private struct LibrarySearchScreen: View {
             timeoutSeconds: 10
         )
     }
-
-    private static func confidence(from score: Int) -> Double {
-        if score >= 9_500 { return 0.98 }
-        if score >= 7_500 { return 0.94 }
-        if score >= 5_500 { return 0.88 }
-        return min(max(0.54 + Double(score) / 10_000, 0.56), 0.84)
-    }
-
-    private static func matches(_ query: String, values: [String?]) -> Bool {
-        let tokens = query
-            .lowercased()
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { !$0.isEmpty }
-        guard !tokens.isEmpty else { return false }
-        let haystack = values
-            .compactMap { $0?.lowercased() }
-            .joined(separator: " ")
-        return tokens.allSatisfy { haystack.contains($0) }
-    }
 }
 
 private enum LibrarySearchEditor: Identifiable {
@@ -3620,6 +3619,331 @@ private enum LibrarySearchEditor: Identifiable {
         case .recentFood(let item):
             return "memory-\(item.id)"
         }
+    }
+}
+
+enum FoodSearchSupport {
+    static func scoredLibraryItems(_ items: [CalorieLibraryItem], query: String) -> [(item: CalorieLibraryItem, score: Int)] {
+        let scored = items.compactMap { item -> (item: CalorieLibraryItem, score: Int)? in
+            let candidates = [item.name, item.brand, item.kind, item.sourceTitle, item.sourceURL] + item.aliases.map(Optional.some)
+            guard let score = score(values: candidates, query: query) else { return nil }
+            return (item, score + (item.isFavorite ? 12 : 0))
+        }
+        .sorted { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            if lhs.item.kind != rhs.item.kind { return lhs.item.kind == "recipe" }
+            return libraryTitle(lhs.item).localizedCaseInsensitiveCompare(libraryTitle(rhs.item)) == .orderedAscending
+        }
+
+        return deduplicatedLibraryItems(scored)
+    }
+
+    static func librarySuggestions(_ items: [CalorieLibraryItem], query: String) -> [(result: ComposerFoodSearchResult, score: Int)] {
+        scoredLibraryItems(items, query: query).map { item, score in
+            let title = libraryTitle(item)
+            return (
+                ComposerFoodSearchResult(
+                    id: "library-\(item.id)",
+                    title: title,
+                    detail: item.detail,
+                    insertText: title,
+                    servingQuantity: item.defaultServingQty,
+                    servingUnit: item.defaultServingUnit,
+                    servingWeight: item.defaultServingWeight,
+                    calories: item.calories,
+                    protein: item.protein,
+                    carbs: item.carbs,
+                    fat: item.fat,
+                    source: item.sourceTitle,
+                    sourceURL: item.sourceURL,
+                    notes: item.notes,
+                    confidence: confidence(from: score)
+                ),
+                score
+            )
+        }
+    }
+
+    static func recentSuggestions(
+        _ items: [CanonicalFoodItem],
+        query: String,
+        excludingLibraryItems libraryItems: [CalorieLibraryItem]
+    ) -> [(result: ComposerFoodSearchResult, score: Int)] {
+        let visibleItems = visibleCanonicalItems(items, excludingLibraryItems: libraryItems)
+        return visibleItems.compactMap { item -> (result: ComposerFoodSearchResult, score: Int)? in
+            let candidates = [item.title, item.displayName, item.brand, item.canonicalName]
+            guard let score = score(values: candidates, query: query) else { return nil }
+            return (
+                ComposerFoodSearchResult(
+                    id: "recent-\(item.id)",
+                    title: item.title,
+                    detail: item.detail,
+                    insertText: item.title,
+                    servingQuantity: item.defaultServingQty,
+                    servingUnit: item.defaultServingUnit,
+                    servingWeight: item.defaultServingWeight,
+                    calories: item.calories,
+                    protein: item.protein,
+                    carbs: item.carbs,
+                    fat: item.fat,
+                    source: "Recent food",
+                    notes: "Logged before",
+                    confidence: confidence(from: score + 6)
+                ),
+                score + 6
+            )
+        }
+    }
+
+    static func standardSuggestions(
+        query: String,
+        excludingLibraryItems libraryItems: [CalorieLibraryItem],
+        excludingCanonicalItems canonicalItems: [CanonicalFoodItem],
+        excludingSuggestions suggestions: [ComposerFoodSearchResult],
+        limit: Int = 12
+    ) -> [ComposerFoodSearchResult] {
+        let results = StandardFoodDatabase.matches(query: query, limit: limit).map { food, score in
+            ComposerFoodSearchResult(
+                id: "standard-\(food.id)",
+                title: food.name,
+                detail: food.detail,
+                insertText: food.name,
+                servingQuantity: food.servingQuantity,
+                servingUnit: food.servingUnit,
+                servingWeight: food.servingWeight,
+                calories: food.calories,
+                protein: food.protein,
+                carbs: food.carbs,
+                fat: food.fat,
+                source: "Foundation food",
+                notes: "Built-in common food estimate",
+                confidence: confidence(from: score + 3)
+            )
+        }
+        return filteredSuggestions(
+            results,
+            excludingLibraryItems: libraryItems,
+            excludingCanonicalItems: canonicalItems,
+            excludingSuggestions: suggestions
+        )
+    }
+
+    static func filteredSuggestions(
+        _ suggestions: [ComposerFoodSearchResult],
+        excludingLibraryItems libraryItems: [CalorieLibraryItem],
+        excludingCanonicalItems canonicalItems: [CanonicalFoodItem],
+        excludingSuggestions existingSuggestions: [ComposerFoodSearchResult]
+    ) -> [ComposerFoodSearchResult] {
+        var keys = Set<String>()
+        for item in libraryItems {
+            libraryDuplicateKeys(item).forEach { keys.insert($0) }
+        }
+        for item in canonicalItems {
+            canonicalDuplicateKeys(item).forEach { keys.insert($0) }
+        }
+        for suggestion in existingSuggestions {
+            suggestionDuplicateKeys(suggestion).forEach { keys.insert($0) }
+        }
+
+        var output: [ComposerFoodSearchResult] = []
+        for suggestion in suggestions {
+            let suggestionKeys = suggestionDuplicateKeys(suggestion)
+            guard suggestionKeys.allSatisfy({ !keys.contains($0) }) else { continue }
+            output.append(suggestion)
+            suggestionKeys.forEach { keys.insert($0) }
+        }
+        return output
+    }
+
+    static func deduplicatedSuggestions(_ suggestions: [ComposerFoodSearchResult]) -> [ComposerFoodSearchResult] {
+        var output: [ComposerFoodSearchResult] = []
+        var indexByKey: [String: Int] = [:]
+
+        for suggestion in suggestions {
+            let keys = suggestionDuplicateKeys(suggestion)
+            if let existingIndex = keys.compactMap({ indexByKey[$0] }).first {
+                if sourcePriority(suggestion) < sourcePriority(output[existingIndex]) {
+                    output[existingIndex] = suggestion
+                    for key in keys {
+                        indexByKey[key] = existingIndex
+                    }
+                }
+                continue
+            }
+
+            output.append(suggestion)
+            let index = output.count - 1
+            for key in keys {
+                indexByKey[key] = index
+            }
+        }
+
+        return output
+    }
+
+    static func visibleCanonicalItems(
+        _ items: [CanonicalFoodItem],
+        excludingLibraryItems libraryItems: [CalorieLibraryItem]
+    ) -> [CanonicalFoodItem] {
+        var libraryKeys = Set<String>()
+        for item in libraryItems {
+            libraryDuplicateKeys(item).forEach { libraryKeys.insert($0) }
+        }
+
+        return items.filter { item in
+            canonicalDuplicateKeys(item).allSatisfy { !libraryKeys.contains($0) }
+        }
+    }
+
+    static func matches(_ query: String, values: [String?]) -> Bool {
+        score(values: values, query: query) != nil
+    }
+
+    static func score(values: [String?], query: String) -> Int? {
+        let tokens = searchTokens(query)
+        guard !tokens.isEmpty else { return nil }
+        let candidates = values.compactMap { $0?.nilIfBlankForFoodSearch }
+        guard !candidates.isEmpty else { return nil }
+
+        if let phraseScore = candidates.compactMap({ fuzzyScore(candidate: $0, query: query) }).max(),
+           phraseScore >= 5_000 {
+            return phraseScore
+        }
+
+        var total = 0
+        for token in tokens {
+            let tokenScore = candidates.compactMap { candidate in
+                fuzzyScore(candidate: candidate, query: token)
+            }.max()
+            guard let tokenScore else { return nil }
+            total += tokenScore
+        }
+        return total / max(tokens.count, 1)
+    }
+
+    static func fuzzyScore(candidate: String, query: String) -> Int? {
+        let candidate = normalizedSearchText(candidate)
+        let query = normalizedSearchText(query)
+        guard !query.isEmpty else { return nil }
+        if candidate == query { return 10_000 }
+        if candidate.hasPrefix(query) { return 8_000 - candidate.count }
+        if candidate.contains(query) { return 6_000 - candidate.count }
+
+        var score = 0
+        var searchStart = candidate.startIndex
+        for scalar in query {
+            guard let found = candidate[searchStart...].firstIndex(of: scalar) else { return nil }
+            score += candidate.distance(from: searchStart, to: found) == 0 ? 90 : 25
+            searchStart = candidate.index(after: found)
+        }
+        return score - candidate.count
+    }
+
+    static func confidence(from score: Int) -> Double {
+        if score >= 9_500 { return 0.98 }
+        if score >= 7_500 { return 0.94 }
+        if score >= 5_500 { return 0.88 }
+        return min(max(0.54 + Double(score) / 10_000, 0.56), 0.84)
+    }
+
+    static func libraryTitle(_ item: CalorieLibraryItem) -> String {
+        item.brand.map { "\($0) \(item.name)" } ?? item.name
+    }
+
+    private static func deduplicatedLibraryItems(
+        _ scored: [(item: CalorieLibraryItem, score: Int)]
+    ) -> [(item: CalorieLibraryItem, score: Int)] {
+        let recipeCanonicalIDs = Set(scored.compactMap { scoredItem -> String? in
+            scoredItem.item.kind == "recipe" ? scoredItem.item.canonicalFoodId : nil
+        })
+        let recipeNameKeys = Set(scored.compactMap { scoredItem -> String? in
+            scoredItem.item.kind == "recipe" ? normalizedSearchText(scoredItem.item.name) : nil
+        })
+
+        var seenKeys = Set<String>()
+        var output: [(item: CalorieLibraryItem, score: Int)] = []
+
+        for scoredItem in scored {
+            let item = scoredItem.item
+            if item.kind != "recipe" {
+                if let canonicalFoodId = item.canonicalFoodId, recipeCanonicalIDs.contains(canonicalFoodId) {
+                    continue
+                }
+                if recipeNameKeys.contains(normalizedSearchText(item.name)) {
+                    continue
+                }
+            }
+
+            let keys = libraryDuplicateKeys(item)
+            guard keys.allSatisfy({ !seenKeys.contains($0) }) else { continue }
+            output.append(scoredItem)
+            keys.forEach { seenKeys.insert($0) }
+        }
+
+        return output
+    }
+
+    private static func libraryDuplicateKeys(_ item: CalorieLibraryItem) -> [String] {
+        var keys = ["title:\(normalizedSearchText(libraryTitle(item)))"]
+        if item.brand == nil {
+            keys.append("title:\(normalizedSearchText(item.name))")
+        }
+        if let canonicalFoodId = item.canonicalFoodId {
+            keys.append("canonical:\(canonicalFoodId)")
+        }
+        return keys.filter { !$0.hasSuffix(":") }
+    }
+
+    private static func canonicalDuplicateKeys(_ item: CanonicalFoodItem) -> [String] {
+        var keys = [
+            "canonical:\(item.id)",
+            "title:\(normalizedSearchText(item.title))",
+            "title:\(normalizedSearchText(item.displayName))"
+        ]
+        if !item.canonicalName.isEmpty {
+            keys.append("title:\(normalizedSearchText(item.canonicalName))")
+        }
+        return keys.filter { !$0.hasSuffix(":") }
+    }
+
+    private static func suggestionDuplicateKeys(_ suggestion: ComposerFoodSearchResult) -> [String] {
+        var keys = [
+            "title:\(normalizedSearchText(suggestion.title))",
+            "title:\(normalizedSearchText(suggestion.insertText))"
+        ]
+        if suggestion.id.hasPrefix("recent-") {
+            keys.append("canonical:\(String(suggestion.id.dropFirst("recent-".count)))")
+        }
+        return keys.filter { !$0.hasSuffix(":") }
+    }
+
+    private static func sourcePriority(_ suggestion: ComposerFoodSearchResult) -> Int {
+        if suggestion.id.hasPrefix("library-") { return 0 }
+        if suggestion.id.hasPrefix("recent-") { return 1 }
+        if suggestion.id.hasPrefix("standard-") { return 2 }
+        return 3
+    }
+
+    private static func searchTokens(_ value: String) -> [String] {
+        normalizedSearchText(value)
+            .components(separatedBy: .whitespaces)
+            .filter { !$0.isEmpty }
+    }
+
+    private static func normalizedSearchText(_ value: String) -> String {
+        value
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+            .lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+}
+
+private extension String {
+    var nilIfBlankForFoodSearch: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 
@@ -5433,6 +5757,25 @@ private struct DashboardAISuggestionCandidate: Encodable {
     let fat: Double
 }
 
+private enum DashboardProgressWidgetStore {
+    static let snapshotKey = "dashboard.progress.snapshot"
+    static let widgetKind = "MacrodexProgressWidget"
+}
+
+private struct DashboardProgressWidgetSnapshot: Codable, Equatable {
+    let dateKey: String
+    let caloriesConsumed: Double
+    let calorieGoal: Double
+    let proteinConsumed: Double
+    let proteinGoal: Double
+    let carbsConsumed: Double
+    let carbsGoal: Double
+    let fatConsumed: Double
+    let fatGoal: Double
+    let logCount: Int
+    let updatedAt: Date
+}
+
 struct DashboardAIInsightResponse: Decodable {
     let summary: String
     let suggestionIDs: [String]
@@ -5768,6 +6111,7 @@ final class CalorieTrackerStore: ObservableObject {
             try loadDailyNote()
             errorMessage = nil
             queueHealthKitSyncIfNeeded(for: todayKey)
+            publishProgressWidgetSnapshotIfNeeded()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -7003,6 +7347,32 @@ final class CalorieTrackerStore: ObservableObject {
             }
         }
         return next
+    }
+
+    private func publishProgressWidgetSnapshotIfNeeded() {
+        guard selectedDate == calendar.startOfDay(for: Date()),
+              let defaults = UserDefaults(suiteName: MacrodexPalette.appGroupSuite)
+        else {
+            return
+        }
+
+        let snapshot = DashboardProgressWidgetSnapshot(
+            dateKey: todayKey,
+            caloriesConsumed: todayTotals.calories,
+            calorieGoal: goal.calories,
+            proteinConsumed: todayTotals.protein,
+            proteinGoal: goal.protein,
+            carbsConsumed: todayTotals.carbs,
+            carbsGoal: goal.carbs,
+            fatConsumed: todayTotals.fat,
+            fatGoal: goal.fat,
+            logCount: todayLogs.count,
+            updatedAt: Date()
+        )
+
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        defaults.set(data, forKey: DashboardProgressWidgetStore.snapshotKey)
+        WidgetCenter.shared.reloadTimelines(ofKind: DashboardProgressWidgetStore.widgetKind)
     }
 
     @discardableResult

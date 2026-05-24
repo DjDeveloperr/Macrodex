@@ -320,6 +320,7 @@
 		A223408294800CDB6ECB0677 /* Melon.svg in Resources */ = {isa = PBXBuildFile; fileRef = EC43A7C9967DAC3BBAE74D52 /* Melon.svg */; };
 		A22ECFFFA8EDED4D63F7E9B4 /* absolutely-dark.json in Resources */ = {isa = PBXBuildFile; fileRef = 5E2B44051D9ACA328FF02237 /* absolutely-dark.json */; };
 		A28B45F9AEB4EBAE60EBB374 /* Hamburger.png in Resources */ = {isa = PBXBuildFile; fileRef = 4464CE3924DF9E1804580141 /* Hamburger.png */; };
+		A2F79F268B9C5C83727F7C2E /* MacrodexWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CF5DF88CFA2C31BE37CAAB7 /* MacrodexWidget.swift */; };
 		A32274CFF6D0AEBA32BD6EA1 /* Watermelon.svg in Resources */ = {isa = PBXBuildFile; fileRef = DA089BC5635BD06FA5480ED4 /* Watermelon.svg */; };
 		A32A56AF09BB57FB02414DF7 /* Birthday Cake.png in Resources */ = {isa = PBXBuildFile; fileRef = 785DB2473F316CA0CC7B7873 /* Birthday Cake.png */; };
 		A37CC563FBD2C1A106F57C70 /* everforest-dark.json in Resources */ = {isa = PBXBuildFile; fileRef = D3F3EC805ED64F2BFFD6A120 /* everforest-dark.json */; };
@@ -355,6 +356,7 @@
 		B9345D2C99E330A081C44538 /* Coconut Cocktail.svg in Resources */ = {isa = PBXBuildFile; fileRef = D2EE70494B920B9E0882A294 /* Coconut Cocktail.svg */; };
 		B9439DA21E50513089CEF1C6 /* MobilePreferencesDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A008AA83FE54B012398646C /* MobilePreferencesDirectory.swift */; };
 		B9E074A83D568389FA6FCFE8 /* pierre-dark.json in Resources */ = {isa = PBXBuildFile; fileRef = 3C74804804130A03237D2793 /* pierre-dark.json */; };
+		BA954B7DE6BF3C58BC7CBC76 /* MacrodexWidgetExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = B77E3C4962992C8F1B8A1948 /* MacrodexWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		BB9BF66D9CFF3BC91FAC22F2 /* SubagentCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A81076104C830B6AB9505BB1 /* SubagentCardView.swift */; };
 		BBC6B120226B6EE1EF3311E5 /* Olive.svg in Resources */ = {isa = PBXBuildFile; fileRef = 7D435A4CB5E23CC99A088396 /* Olive.svg */; };
 		BBE98D586889770D9CFFF090 /* Food And Wine.png in Resources */ = {isa = PBXBuildFile; fileRef = 4B4B3967F3299920A3426B76 /* Food And Wine.png */; };
@@ -367,6 +369,7 @@
 		BE95E4C73B151801EE56D24F /* Beer.svg in Resources */ = {isa = PBXBuildFile; fileRef = A9DF6F233EF8C828E96E0EDA /* Beer.svg */; };
 		BE9665C84C12EA848FA929F5 /* Cola.png in Resources */ = {isa = PBXBuildFile; fileRef = BE107FC46142107A11D6EFDE /* Cola.png */; };
 		BF5CA6D07C1A966B5D986D10 /* vesper.json in Resources */ = {isa = PBXBuildFile; fileRef = ABBAB1D752E86DEE09564E22 /* vesper.json */; };
+		C074AF9F2E8F5AA978DF1147 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E096B6485C58D06D8A18F27C /* Foundation.framework */; };
 		C161447A26D259EEC30AE4A0 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2387B68086490E1ECEAE8593 /* AppState.swift */; };
 		C1ED99CFFBF1F1FFB16C6FD4 /* macrodex-dark.json in Resources */ = {isa = PBXBuildFile; fileRef = 5855DED55207267C4C519700 /* macrodex-dark.json */; };
 		C2174CF0E212DC8AF7754B7F /* MacrodexAgent in Frameworks */ = {isa = PBXBuildFile; productRef = F06FBC4F1F6BC868F6FF5239 /* MacrodexAgent */; };
@@ -503,12 +506,37 @@
 		FFBD70F1B3B6DB8A80F50628 /* Cabbage.svg in Resources */ = {isa = PBXBuildFile; fileRef = 13832C91CEB842EA98581FE2 /* Cabbage.svg */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		E21A82AAEEB6F2AF09A42665 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 3C4B6C93FEBEB8747146AA6B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D1FC5A8C842A0C64080AE81A;
+			remoteInfo = MacrodexWidgetExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		33EC7DC31A6135ED1EB8FD2F /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				BA954B7DE6BF3C58BC7CBC76 /* MacrodexWidgetExtension.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		006A15A0D6DFA3FAECF8ED0C /* material-theme.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "material-theme.json"; sourceTree = "<group>"; };
 		00804514F47B137B9A4ECABA /* Tapas.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = Tapas.png; sourceTree = "<group>"; };
 		00E6DBA1FBFC60345943F484 /* DefaultFood.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = DefaultFood.png; sourceTree = "<group>"; };
 		01282280EA464FB486F88200 /* Tea Cup.svg */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = "Tea Cup.svg"; sourceTree = "<group>"; };
 		01A67AEAA8329E8464BDD161 /* VoiceSessionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceSessionCoordinator.swift; sourceTree = "<group>"; };
+		03133BE786FBC1E2CB2354A3 /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		04349C9701B022DF6B2AD1FA /* Melon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = Melon.png; sourceTree = "<group>"; };
 		04A3B98332F7BA75CBF7AF7B /* Pomegranate.svg */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Pomegranate.svg; sourceTree = "<group>"; };
 		05BF3D8FCB1E26284DA2D9C5 /* Ingredients.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = Ingredients.png; sourceTree = "<group>"; };
@@ -650,6 +678,7 @@
 		4B4B3967F3299920A3426B76 /* Food And Wine.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "Food And Wine.png"; sourceTree = "<group>"; };
 		4C1EFCBFC96CC59E7EFB4B82 /* ConversationAttachmentSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationAttachmentSupport.swift; sourceTree = "<group>"; };
 		4C8BB87A158982D1A126634B /* French Fries.svg */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = "French Fries.svg"; sourceTree = "<group>"; };
+		4CF5DF88CFA2C31BE37CAAB7 /* MacrodexWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MacrodexWidget.swift; sourceTree = "<group>"; };
 		4D20086EB73588E547F86011 /* AudioWaveformView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioWaveformView.swift; sourceTree = "<group>"; };
 		4E0800AB1A02544B7F3138C7 /* RecentDirectoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentDirectoryStore.swift; sourceTree = "<group>"; };
 		4E473A2B09BB449082B500D9 /* ConversationComposerAttachSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationComposerAttachSheet.swift; sourceTree = "<group>"; };
@@ -837,6 +866,7 @@
 		B61AB14F4D699EE52CEA7252 /* ConversationComposerPopupOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationComposerPopupOverlayView.swift; sourceTree = "<group>"; };
 		B69B5D131BDDED2FB2D9EB93 /* AppRuntimeController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRuntimeController.swift; sourceTree = "<group>"; };
 		B6CCF8B5079704AE0C794F5D /* Cheese.svg */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Cheese.svg; sourceTree = "<group>"; };
+		B77E3C4962992C8F1B8A1948 /* MacrodexWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = MacrodexWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		B7FB44AA134B40505710AC77 /* Ingredients.svg */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Ingredients.svg; sourceTree = "<group>"; };
 		B8173ABA62767BB8B7988557 /* Porridge.svg */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Porridge.svg; sourceTree = "<group>"; };
 		B875C082E0B0A6AC1CDC5D6A /* Radish.svg */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Radish.svg; sourceTree = "<group>"; };
@@ -941,6 +971,7 @@
 		DFC0E8A5B4B5D8ED67CF6783 /* AppSpecificTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSpecificTypes.swift; sourceTree = "<group>"; };
 		DFFCEB151781F38B33728AAF /* Watermelon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = Watermelon.png; sourceTree = "<group>"; };
 		E0906591DFABB628183CC574 /* Cotton Candy.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "Cotton Candy.png"; sourceTree = "<group>"; };
+		E096B6485C58D06D8A18F27C /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		E0E011F7881BA6589691BF52 /* Hot Dog.svg */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = "Hot Dog.svg"; sourceTree = "<group>"; };
 		E1294F2C3DF35D4B214B6786 /* Spaghetti.svg */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Spaghetti.svg; sourceTree = "<group>"; };
 		E2E44F08A7615B78AC220E5B /* AppLifecycleController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLifecycleController.swift; sourceTree = "<group>"; };
@@ -999,6 +1030,7 @@
 		FEB41B90FF70B6F61217BAA1 /* Cocktail.svg */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Cocktail.svg; sourceTree = "<group>"; };
 		FEECAB62C32D058691E0F1E2 /* Banana.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = Banana.png; sourceTree = "<group>"; };
 		FF58A43BD4DF67A2BB982F8C /* Raspberry.svg */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Raspberry.svg; sourceTree = "<group>"; };
+		FFD46D6AB127E2BAE3657DE9 /* MacrodexWidget.entitlements */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = MacrodexWidget.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -1014,6 +1046,14 @@
 				E6552E49C3630DB01A76D368 /* HairballUI in Frameworks */,
 				C2174CF0E212DC8AF7754B7F /* MacrodexAgent in Frameworks */,
 				7DE8C54030A47172981E1381 /* SimDeckInspectorAgent in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FE5399B14FD276E62906976A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C074AF9F2E8F5AA978DF1147 /* Foundation.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1104,6 +1144,7 @@
 			isa = PBXGroup;
 			children = (
 				CDDBB605D88C7AC9E6D9C9A6 /* Macrodex.app */,
+				B77E3C4962992C8F1B8A1948 /* MacrodexWidgetExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -1116,6 +1157,7 @@
 				BAB7E7A407F94EF925DE5FB5 /* Network.framework */,
 				6DFD16E31BD3762731662D61 /* Security.framework */,
 				4646E35C9F8BC4CF8A5CC11A /* SystemConfiguration.framework */,
+				F589488143172DD49859FAF6 /* iOS */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -1268,6 +1310,7 @@
 				7B77EABA5A83E181211A2DAE /* Themes */,
 				64B716228277FAC181E09B8E /* Frameworks */,
 				59682F88EC010E4C1BD62608 /* Products */,
+				FAEEE5BFC89DE0C9086EF725 /* MacrodexWidget */,
 			);
 			sourceTree = "<group>";
 		};
@@ -1604,6 +1647,25 @@
 			path = Packages;
 			sourceTree = "<group>";
 		};
+		F589488143172DD49859FAF6 /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				E096B6485C58D06D8A18F27C /* Foundation.framework */,
+			);
+			name = iOS;
+			sourceTree = "<group>";
+		};
+		FAEEE5BFC89DE0C9086EF725 /* MacrodexWidget */ = {
+			isa = PBXGroup;
+			children = (
+				4CF5DF88CFA2C31BE37CAAB7 /* MacrodexWidget.swift */,
+				03133BE786FBC1E2CB2354A3 /* Info.plist */,
+				FFD46D6AB127E2BAE3657DE9 /* MacrodexWidget.entitlements */,
+			);
+			name = MacrodexWidget;
+			path = MacrodexWidget;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -1614,10 +1676,12 @@
 				B9AB7208F6ED56EACC9AD702 /* Sources */,
 				3250A0BE441964DC6AAF059D /* Resources */,
 				BA20880C314424B084A9C286 /* Frameworks */,
+				33EC7DC31A6135ED1EB8FD2F /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				2974DA76AB7041D9614A22F0 /* PBXTargetDependency */,
 			);
 			name = Macrodex;
 			packageProductDependencies = (
@@ -1628,6 +1692,23 @@
 			productName = Macrodex;
 			productReference = CDDBB605D88C7AC9E6D9C9A6 /* Macrodex.app */;
 			productType = "com.apple.product-type.application";
+		};
+		D1FC5A8C842A0C64080AE81A /* MacrodexWidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 3A5CF95F75D4C72C0B8226B3 /* Build configuration list for PBXNativeTarget "MacrodexWidgetExtension" */;
+			buildPhases = (
+				6FAE7F7EA01607D71C47D94E /* Sources */,
+				FE5399B14FD276E62906976A /* Frameworks */,
+				CC614A521AEE56A118779AA6 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = MacrodexWidgetExtension;
+			productName = MacrodexWidgetExtension;
+			productReference = B77E3C4962992C8F1B8A1948 /* MacrodexWidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -1659,13 +1740,15 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				6B2E7488E3CE33D687F5B06A /* XCRemoteSwiftPackageReference "hairball" */,
-				2F65B322F40C484720F3CEA0 /* XCLocalSwiftPackageReference "Packages/MacrodexAgent" */,
-				2A4A31D47C596A36D0865671 /* XCLocalSwiftPackageReference "Packages/SimDeckInspectorAgent" */,
+				2F65B322F40C484720F3CEA0 /* XCLocalSwiftPackageReference "MacrodexAgent" */,
+				2A4A31D47C596A36D0865671 /* XCLocalSwiftPackageReference "SimDeckInspectorAgent" */,
 			);
+			productRefGroup = 59682F88EC010E4C1BD62608 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
 				34DF8302ABCDA366F6E9B81C /* Macrodex */,
+				D1FC5A8C842A0C64080AE81A /* MacrodexWidgetExtension */,
 			);
 		};
 /* End PBXProject section */
@@ -2057,9 +2140,24 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		CC614A521AEE56A118779AA6 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		6FAE7F7EA01607D71C47D94E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A2F79F268B9C5C83727F7C2E /* MacrodexWidget.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		B9AB7208F6ED56EACC9AD702 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -2176,7 +2274,47 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		2974DA76AB7041D9614A22F0 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = MacrodexWidgetExtension;
+			target = D1FC5A8C842A0C64080AE81A /* MacrodexWidgetExtension */;
+			targetProxy = E21A82AAEEB6F2AF09A42665 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		3CE7F69D472ECDECA7EEC697 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_ENTITLEMENTS = MacrodexWidget/MacrodexWidget.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 202604261725;
+				DEVELOPMENT_TEAM = B55DTZ6VSU;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = MacrodexWidget/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.dj.Macrodex.MacrodexWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
 		45FF61CA97CD066707FAB54A /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -2199,6 +2337,38 @@
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
+		};
+		5FF8A5E171AE8E010BC7AB8F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_ENTITLEMENTS = MacrodexWidget/MacrodexWidget.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 202604261725;
+				DEVELOPMENT_TEAM = B55DTZ6VSU;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = MacrodexWidget/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.dj.Macrodex.MacrodexWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
 		};
 		6C7F4472720852AA7AE3FA43 /* Release */ = {
 			isa = XCBuildConfiguration;
@@ -2382,6 +2552,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
+		3A5CF95F75D4C72C0B8226B3 /* Build configuration list for PBXNativeTarget "MacrodexWidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5FF8A5E171AE8E010BC7AB8F /* Release */,
+				3CE7F69D472ECDECA7EEC697 /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		573BE687C333DEEABE6615F7 /* Build configuration list for PBXProject "Macrodex" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -2394,11 +2573,11 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		2A4A31D47C596A36D0865671 /* XCLocalSwiftPackageReference "Packages/SimDeckInspectorAgent" */ = {
+		2A4A31D47C596A36D0865671 /* XCLocalSwiftPackageReference "SimDeckInspectorAgent" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Packages/SimDeckInspectorAgent;
 		};
-		2F65B322F40C484720F3CEA0 /* XCLocalSwiftPackageReference "Packages/MacrodexAgent" */ = {
+		2F65B322F40C484720F3CEA0 /* XCLocalSwiftPackageReference "MacrodexAgent" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Packages/MacrodexAgent;
 		};

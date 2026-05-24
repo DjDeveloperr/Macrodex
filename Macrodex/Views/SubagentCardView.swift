@@ -382,6 +382,7 @@ private struct SubagentDetailSheet: View {
                                 isLive: threadSnapshot.activeTurnId != nil || threadSnapshot.info.status == .active,
                                 serverId: threadKey.serverId,
                                 agentDirectoryVersion: 0,
+                                streamingReasoningItemIDs: [],
                                 messageActionsDisabled: true,
                                 onStreamingSnapshotRendered: nil,
                                 resolveTargetLabel: { _ in nil },

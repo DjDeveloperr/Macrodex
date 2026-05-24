@@ -481,7 +481,7 @@ private struct ConversationBottomChrome: View {
             )
             .background(.clear, ignoresSafeAreaEdges: .bottom)
         }
-        .padding(.bottom, keyboardVisible ? 0 : 32)
+        .padding(.bottom, keyboardVisible ? 2 : 32)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             keyboardVisible = true
         }
@@ -514,6 +514,7 @@ struct RateLimitBadgeView: View, Equatable {
 
 private struct ConversationMessageList: View {
     @Environment(DrawerController.self) private var drawerController
+    @Environment(AppModel.self) private var appModel
     let items: [ConversationItem]
     let threadStatus: ConversationStatus
     let threadHasServerData: Bool
@@ -620,6 +621,7 @@ private struct ConversationMessageList: View {
     var body: some View {
         let turns = mergedRenderableTurns
         let lastTurnID = turns.last?.id
+        let streamingReasoningItemIDs = appModel.streamingReasoningItemIDs(for: activeThreadKey)
         ScrollViewReader { proxy in
             GeometryReader { viewport in
             ZStack(alignment: .bottomTrailing) {
@@ -652,6 +654,7 @@ private struct ConversationMessageList: View {
                                     }(),
                                     serverId: activeThreadKey.serverId,
                                     agentDirectoryVersion: agentDirectoryVersion,
+                                    streamingReasoningItemIDs: streamingReasoningItemIDs,
                                     messageActionsDisabled: messageActionsDisabled,
                                     onToggleExpansion: {
                                         toggleTurnExpansion(turn)
@@ -1021,6 +1024,7 @@ private struct ConversationTurnRow: View, Equatable {
     let showTypingIndicator: Bool
     let serverId: String
     let agentDirectoryVersion: UInt64
+    let streamingReasoningItemIDs: Set<String>
     @Environment(\.textScale) private var textScale
     let messageActionsDisabled: Bool
     let onToggleExpansion: () -> Void
@@ -1041,6 +1045,7 @@ private struct ConversationTurnRow: View, Equatable {
             lhs.showTypingIndicator == rhs.showTypingIndicator &&
             lhs.serverId == rhs.serverId &&
             lhs.agentDirectoryVersion == rhs.agentDirectoryVersion &&
+            lhs.streamingReasoningItemIDs == rhs.streamingReasoningItemIDs &&
             lhs.messageActionsDisabled == rhs.messageActionsDisabled
     }
 
@@ -1059,6 +1064,7 @@ private struct ConversationTurnRow: View, Equatable {
                 isLive: turn.isLive,
                 serverId: serverId,
                 agentDirectoryVersion: agentDirectoryVersion,
+                streamingReasoningItemIDs: streamingReasoningItemIDs,
                 messageActionsDisabled: messageActionsDisabled,
                 onStreamingSnapshotRendered: onStreamingSnapshotRendered,
                 resolveTargetLabel: resolveTargetLabel,

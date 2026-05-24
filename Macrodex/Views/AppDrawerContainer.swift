@@ -110,8 +110,28 @@ private struct DrawerPanGestureInstaller: UIViewRepresentable {
                 return hasHorizontalIntent
             }
 
+            let touchedView = view.hitTest(location, with: nil)
+            if Self.isHorizontalScrollInteraction(touchedView) {
+                return false
+            }
+
             let isOpening = velocity.x > 0 || translation.x > 0
             return hasHorizontalIntent && isOpening && location.x <= installer.activationWidth
+        }
+
+        private static func isHorizontalScrollInteraction(_ view: UIView?) -> Bool {
+            var current = view
+            while let candidate = current {
+                if let scrollView = candidate as? UIScrollView {
+                    let horizontalRange = scrollView.contentSize.width - scrollView.bounds.width
+                    let verticalRange = scrollView.contentSize.height - scrollView.bounds.height
+                    if scrollView.isPagingEnabled || (horizontalRange > 8 && horizontalRange > verticalRange) {
+                        return true
+                    }
+                }
+                current = candidate.superview
+            }
+            return false
         }
 
         func gestureRecognizer(

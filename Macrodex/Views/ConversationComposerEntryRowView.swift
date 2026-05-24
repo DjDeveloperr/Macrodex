@@ -92,7 +92,8 @@ struct ConversationComposerEntryRowView: View {
                     ConversationComposerTextView(
                         text: $inputText,
                         isFocused: $isComposerFocused,
-                        onPasteImage: onPasteImage
+                        onPasteImage: onPasteImage,
+                        onCommandEnter: onSendText
                     )
 
                     if inputText.isEmpty {

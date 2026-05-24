@@ -2045,84 +2045,34 @@ struct DashboardQuickComposerBar: View {
     }
 
     private func foodSearchMatches(for query: String) -> [ComposerFoodSearchResult] {
-        let libraryMatches = CalorieTrackerStore.shared.libraryItems.compactMap { item -> (ComposerFoodSearchResult, Int)? in
-            let candidates = [item.name, item.brand, item.kind, item.sourceTitle] + item.aliases.map(Optional.some)
-            let score = candidates.compactMap { $0 }.compactMap { quickFuzzyScore(candidate: $0, query: query) }.max()
-            guard let score else { return nil }
-            let title = item.brand.map { "\($0) \(item.name)" } ?? item.name
-            return (ComposerFoodSearchResult(
-                id: "library-\(item.id)",
-                title: title,
-                detail: item.detail,
-                insertText: title,
-                servingQuantity: item.defaultServingQty,
-                servingUnit: item.defaultServingUnit,
-                servingWeight: item.defaultServingWeight,
-                calories: item.calories,
-                protein: item.protein,
-                carbs: item.carbs,
-                fat: item.fat,
-                source: item.sourceTitle,
-                sourceURL: item.sourceURL,
-                notes: item.notes,
-                confidence: confidence(from: score + (item.isFavorite ? 12 : 0))
-            ), score + (item.isFavorite ? 12 : 0))
+        let store = CalorieTrackerStore.shared
+        let libraryMatches = FoodSearchSupport.librarySuggestions(store.libraryItems, query: query)
+        let libraryItems = libraryMatches.compactMap { match in
+            store.libraryItems.first { match.result.id == "library-\($0.id)" }
         }
-        let recentMatches = CalorieTrackerStore.shared.recentFoodMemories.compactMap { item -> (ComposerFoodSearchResult, Int)? in
-            let candidates = [item.title, item.displayName, item.brand, item.canonicalName]
-            let score = candidates.compactMap { $0 }.compactMap { quickFuzzyScore(candidate: $0, query: query) }.max()
-            guard let score else { return nil }
-            return (ComposerFoodSearchResult(
-                id: "recent-\(item.id)",
-                title: item.title,
-                detail: item.detail,
-                insertText: item.title,
-                servingQuantity: item.defaultServingQty,
-                servingUnit: item.defaultServingUnit,
-                servingWeight: item.defaultServingWeight,
-                calories: item.calories,
-                protein: item.protein,
-                carbs: item.carbs,
-                fat: item.fat,
-                source: "Recent food",
-                notes: "Logged before",
-                confidence: confidence(from: score + 6)
-            ), score + 6)
+        let recentMatches = FoodSearchSupport.recentSuggestions(
+            store.recentFoodMemories,
+            query: query,
+            excludingLibraryItems: libraryItems
+        )
+        let recentItems = recentMatches.compactMap { match in
+            store.recentFoodMemories.first { match.result.id == "recent-\($0.id)" }
         }
-        let standardMatches = StandardFoodDatabase.matches(query: query).map { food, score in
-            (
-                ComposerFoodSearchResult(
-                    id: "standard-\(food.id)",
-                    title: food.name,
-                    detail: food.detail,
-                    insertText: food.name,
-                    servingQuantity: food.servingQuantity,
-                    servingUnit: food.servingUnit,
-                    servingWeight: food.servingWeight,
-                    calories: food.calories,
-                    protein: food.protein,
-                    carbs: food.carbs,
-                    fat: food.fat,
-                    source: "Foundation food",
-                    notes: "Built-in common food estimate",
-                    confidence: confidence(from: score + 3)
-                ),
-                score + 3
-            )
+        let standardMatches = FoodSearchSupport.standardSuggestions(
+            query: query,
+            excludingLibraryItems: libraryItems,
+            excludingCanonicalItems: recentItems,
+            excludingSuggestions: libraryMatches.map(\.result) + recentMatches.map(\.result)
+        ).map { result -> (result: ComposerFoodSearchResult, score: Int) in
+            (result, Int((result.confidence ?? 0.6) * 10_000))
         }
-        return (libraryMatches + recentMatches + standardMatches)
+        let sorted = (libraryMatches + recentMatches + standardMatches)
             .sorted { lhs, rhs in
-                if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
-                return lhs.0.title.localizedCaseInsensitiveCompare(rhs.0.title) == .orderedAscending
+                if lhs.score != rhs.score { return lhs.score > rhs.score }
+                return lhs.result.title.localizedCaseInsensitiveCompare(rhs.result.title) == .orderedAscending
             }
-            .map(\.0)
-    }
-
-    private func confidence(from score: Int) -> Double {
-        if score >= 9_500 { return 0.98 }
-        if score >= 7_500 { return 0.94 }
-        if score >= 5_500 { return 0.88 }
-        return min(max(0.54 + Double(score) / 10_000, 0.56), 0.84)
+            .map(\.result)
+        return FoodSearchSupport.deduplicatedSuggestions(sorted)
     }
 
     private func applyFoodSuggestion(_ suggestion: ComposerFoodSearchResult) {
@@ -2154,23 +2104,6 @@ struct DashboardQuickComposerBar: View {
             return .suggested(suggestion)
         }
         return nil
-    }
-
-    private func quickFuzzyScore(candidate: String, query: String) -> Int? {
-        let candidate = candidate.lowercased()
-        let query = query.lowercased()
-        guard !query.isEmpty else { return 0 }
-        if candidate == query { return 10_000 }
-        if candidate.hasPrefix(query) { return 8_000 - candidate.count }
-        if candidate.contains(query) { return 6_000 - candidate.count }
-        var score = 0
-        var searchStart = candidate.startIndex
-        for scalar in query {
-            guard let found = candidate[searchStart...].firstIndex(of: scalar) else { return nil }
-            score += candidate.distance(from: searchStart, to: found) == 0 ? 90 : 25
-            searchStart = candidate.index(after: found)
-        }
-        return score - candidate.count
     }
 
     private func loadSelectedPhotos(_ items: [PhotosPickerItem]) async {

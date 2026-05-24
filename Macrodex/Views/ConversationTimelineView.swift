@@ -26,6 +26,7 @@ struct ConversationTurnTimeline: View {
     let isLive: Bool
     let serverId: String
     let agentDirectoryVersion: UInt64
+    let streamingReasoningItemIDs: Set<String>
     let messageActionsDisabled: Bool
     let onStreamingSnapshotRendered: (() -> Void)?
     let resolveTargetLabel: (String) -> String?
@@ -95,6 +96,7 @@ struct ConversationTurnTimeline: View {
                     isPreferredExpandedCommandRow: isPreferredExpandedCommandRow,
                     isLiveTurn: isLive,
                     isStreamingMessage: item.id == streamingAssistantItemId,
+                    isReasoningStreaming: streamingReasoningItemIDs.contains(item.id),
                     shouldPreserveRichDetail: retainedRichDetailItemIDs.contains(item.id),
                     messageActionsDisabled: messageActionsDisabled,
                     onStreamingSnapshotRendered: item.id == streamingAssistantItemId ? onStreamingSnapshotRendered : nil,
@@ -127,6 +129,13 @@ struct ConversationTurnTimeline: View {
                     serverId: serverId
                 )
             )
+        case .reasoningGroup(_, let items):
+            return AnyView(
+                ConversationReasoningRow(
+                    items: items,
+                    streamingItemIDs: streamingReasoningItemIDs
+                )
+            )
         }
     }
 }
@@ -136,6 +145,7 @@ private enum ConversationTimelineRowDescriptor: Identifiable, Equatable {
     case exploration(id: String, items: [ConversationItem])
     case subagentGroup(id: String, merged: ConversationMultiAgentActionData, sourceItems: [ConversationItem])
     case toolGroup(id: String, items: [ConversationItem])
+    case reasoningGroup(id: String, items: [ConversationItem])
 
     var id: String {
         switch self {
@@ -146,6 +156,8 @@ private enum ConversationTimelineRowDescriptor: Identifiable, Equatable {
         case .subagentGroup(let id, _, _):
             return id
         case .toolGroup(let id, _):
+            return id
+        case .reasoningGroup(let id, _):
             return id
         }
     }
@@ -167,6 +179,8 @@ private enum ConversationTimelineRowDescriptor: Identifiable, Equatable {
     static func build(from items: [ConversationItem]) -> [ConversationTimelineRowDescriptor] {
         var rows: [ConversationTimelineRowDescriptor] = []
         var explorationBuffer: [ConversationItem] = []
+        var reasoningBuffer: [ConversationItem] = []
+        var reasoningTurnId: String?
         var subagentBuffer: [(item: ConversationItem, data: ConversationMultiAgentActionData)] = []
         var subagentTool: String?
         var toolBuffer: [ConversationItem] = []
@@ -177,6 +191,18 @@ private enum ConversationTimelineRowDescriptor: Identifiable, Equatable {
             let seed = explorationBuffer.first?.id ?? UUID().uuidString
             rows.append(.exploration(id: "exploration-\(seed)", items: explorationBuffer))
             explorationBuffer.removeAll(keepingCapacity: true)
+        }
+
+        func flushReasoningBuffer() {
+            guard !reasoningBuffer.isEmpty else { return }
+            if reasoningBuffer.count == 1 {
+                rows.append(.item(reasoningBuffer[0]))
+            } else {
+                let seed = reasoningBuffer.first?.id ?? UUID().uuidString
+                rows.append(.reasoningGroup(id: "reasoning-group-\(seed)", items: reasoningBuffer))
+            }
+            reasoningBuffer.removeAll(keepingCapacity: true)
+            reasoningTurnId = nil
         }
 
         func flushToolBuffer() {
@@ -239,12 +265,23 @@ private enum ConversationTimelineRowDescriptor: Identifiable, Equatable {
         for item in items {
             if item.isVisuallyEmptyNeutralItem {
                 continue
+            } else if case .reasoning = item.content {
+                flushExplorationBuffer()
+                flushToolBuffer()
+                flushSubagentBuffer()
+                let turnKey = item.sourceTurnId ?? item.id
+                if let currentReasoningTurnId = reasoningTurnId, currentReasoningTurnId != turnKey {
+                    flushReasoningBuffer()
+                }
+                reasoningBuffer.append(item)
+                reasoningTurnId = turnKey
             } else if case .multiAgentAction(let data) = item.content {
                 let tool = data.tool.lowercased()
                 if let currentTool = subagentTool, currentTool == tool {
                     subagentBuffer.append((item, data))
                 } else {
                     flushExplorationBuffer()
+                    flushReasoningBuffer()
                     flushToolBuffer()
                     flushSubagentBuffer()
                     subagentBuffer.append((item, data))
@@ -252,6 +289,7 @@ private enum ConversationTimelineRowDescriptor: Identifiable, Equatable {
                 }
             } else if item.isTimelineToolCallItem {
                 flushExplorationBuffer()
+                flushReasoningBuffer()
                 flushSubagentBuffer()
                 let turnId = item.sourceTurnId
                 if let currentToolTurnId = toolTurnId, currentToolTurnId != turnId {
@@ -260,11 +298,13 @@ private enum ConversationTimelineRowDescriptor: Identifiable, Equatable {
                 toolBuffer.append(item)
                 toolTurnId = turnId
             } else if case .commandExecution(let data) = item.content, data.isPureExploration {
+                flushReasoningBuffer()
                 flushSubagentBuffer()
                 flushToolBuffer()
                 explorationBuffer.append(item)
             } else {
                 flushExplorationBuffer()
+                flushReasoningBuffer()
                 flushSubagentBuffer()
                 flushToolBuffer()
                 rows.append(.item(item))
@@ -272,6 +312,7 @@ private enum ConversationTimelineRowDescriptor: Identifiable, Equatable {
         }
 
         flushExplorationBuffer()
+        flushReasoningBuffer()
         flushSubagentBuffer()
         flushToolBuffer()
         return rows
@@ -399,6 +440,7 @@ private struct ConversationTimelineItemRow: View, Equatable {
     let isPreferredExpandedCommandRow: Bool
     let isLiveTurn: Bool
     let isStreamingMessage: Bool
+    let isReasoningStreaming: Bool
     let shouldPreserveRichDetail: Bool
     let messageActionsDisabled: Bool
     let onStreamingSnapshotRendered: (() -> Void)?
@@ -421,6 +463,7 @@ private struct ConversationTimelineItemRow: View, Equatable {
             (assistantCanReuseBody || lhs.item.renderDigest == rhs.item.renderDigest) &&
             (isAssistant || lhs.shouldPreserveRichDetail == rhs.shouldPreserveRichDetail) &&
             (assistantCanReuseBody || lhs.isStreamingMessage == rhs.isStreamingMessage) &&
+            lhs.isReasoningStreaming == rhs.isReasoningStreaming &&
             lhs.serverId == rhs.serverId &&
             lhs.agentDirectoryVersion == rhs.agentDirectoryVersion &&
             lhs.isPreferredExpandedCommandRow == rhs.isPreferredExpandedCommandRow &&
@@ -442,7 +485,7 @@ private struct ConversationTimelineItemRow: View, Equatable {
         case .codeReview(let data):
             return AnyView(ConversationCodeReviewRow(data: data))
         case .reasoning(let data):
-            return AnyView(ConversationReasoningRow(data: data, isLive: isLiveTurn))
+            return AnyView(ConversationReasoningRow(item: item, data: data, isStreaming: isReasoningStreaming))
         case .todoList(let data):
             return AnyView(ConversationTodoListRow(data: data))
         case .proposedPlan(let data):
@@ -1233,55 +1276,81 @@ private struct ExplorationDisplayEntry: Identifiable {
 }
 
 private struct ConversationReasoningRow: View {
-    let data: ConversationReasoningData
-    let isLive: Bool
+    let items: [ConversationItem]
+    let streamingItemIDs: Set<String>
     @Environment(DrawerController.self) private var drawerController
-    @State private var selectedClause: ReasoningClause?
+    @State private var isDetailPresented = false
+
+    init(item: ConversationItem, data: ConversationReasoningData, isStreaming: Bool) {
+        self.items = [
+            ConversationItem(
+                id: item.id,
+                content: .reasoning(data),
+                sourceTurnId: item.sourceTurnId,
+                sourceTurnIndex: item.sourceTurnIndex,
+                timestamp: item.timestamp,
+                isFromUserTurnBoundary: item.isFromUserTurnBoundary
+            )
+        ]
+        self.streamingItemIDs = isStreaming ? Set([item.id]) : []
+    }
+
+    init(items: [ConversationItem], streamingItemIDs: Set<String>) {
+        self.items = items
+        self.streamingItemIDs = streamingItemIDs
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(clauses) { clause in
-                reasoningClauseRow(clause)
-            }
-        }
+        reasoningClauseRow(latestClause)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 2)
-        .sheet(item: $selectedClause) { clause in
-            ReasoningClauseDetailSheet(clause: clause)
+        .sheet(isPresented: $isDetailPresented) {
+            ReasoningClausesDetailSheet(clauses: clauses)
                 .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
         }
     }
 
-    private var rawReasoningText: String {
-        (data.summary + data.content)
-            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            .joined(separator: "\n\n")
+    private var clauses: [ReasoningClause] {
+        let parsed = items.flatMap { item -> [ReasoningClause] in
+            guard case .reasoning(let data) = item.content else { return [] }
+            let rawText = (data.summary + data.content)
+                .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                .joined(separator: "\n\n")
+            return ReasoningClauseParser.clauses(from: rawText).map {
+                $0.withSource(itemID: item.id)
+            }
+        }
+        return parsed.enumerated().map { index, clause in
+            clause.withLatest(index == parsed.count - 1)
+        }
     }
 
-    private var clauses: [ReasoningClause] {
-        ReasoningClauseParser.clauses(from: rawReasoningText)
+    private var latestClause: ReasoningClause? {
+        clauses.last
     }
 
     @ViewBuilder
-    private func reasoningClauseRow(_ clause: ReasoningClause) -> some View {
-        Button {
-            guard !drawerController.shouldSuppressContentInteractions else { return }
-            selectedClause = clause
-        } label: {
-            ThinkingShimmerLabel(
-                text: clause.title,
-                isActive: isLive && clause.isLatest,
-                fontSize: MacrodexFont.conversationBodyPointSize
-            )
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .accessibilityHint("Shows thinking details")
+    private func reasoningClauseRow(_ clause: ReasoningClause?) -> some View {
+        if let clause {
+            Button {
+                guard !drawerController.shouldSuppressContentInteractions else { return }
+                isDetailPresented = true
+            } label: {
+                ThinkingShimmerLabel(
+                    text: clause.title,
+                    isActive: streamingItemIDs.contains(clause.sourceItemID),
+                    fontSize: MacrodexFont.conversationBodyPointSize
+                )
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .accessibilityHint("Shows thinking details")
+            }
+            .buttonStyle(.plain)
+            .padding(.vertical, 4)
         }
-        .buttonStyle(.plain)
-        .padding(.vertical, 4)
     }
 }
 
@@ -1313,47 +1382,69 @@ private struct ThinkingShimmerLabel: View {
                     .foregroundColor(MacrodexTheme.textSystem)
             }
         }
-        .animation(isActive ? .easeInOut(duration: 1.5).repeatForever(autoreverses: false) : nil, value: shimmerOffset)
         .onAppear {
-            if isActive {
-                shimmerOffset = 2
-            }
+            updateShimmer(active: isActive)
         }
         .onChange(of: isActive) { _, active in
-            shimmerOffset = active ? 2 : -1
+            updateShimmer(active: active)
+        }
+    }
+
+    private func updateShimmer(active: Bool) {
+        if active {
+            shimmerOffset = -1
+            withAnimation(.easeInOut(duration: 1.5).repeatForever(autoreverses: false)) {
+                shimmerOffset = 2
+            }
+        } else {
+            withAnimation(nil) {
+                shimmerOffset = -1
+            }
         }
     }
 }
 
-private struct ReasoningClauseDetailSheet: View {
+private struct ReasoningClausesDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
-    let clause: ReasoningClause
+    let clauses: [ReasoningClause]
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(clause.title)
-                        .macrodexFont(.headline, weight: .semibold)
-                        .foregroundColor(MacrodexTheme.textPrimary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
-
-                    if clause.body.isEmpty {
+                VStack(alignment: .leading, spacing: 18) {
+                    if clauses.isEmpty {
                         Text("No details available")
                             .macrodexFont(.callout)
                             .foregroundColor(MacrodexTheme.textSecondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     } else {
-                        MacrodexMarkdownView(
-                            markdown: clause.body,
-                            style: .content,
-                            bodySize: 13,
-                            codeSize: 12
-                        )
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        ForEach(clauses) { clause in
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text(clause.title)
+                                    .macrodexFont(.headline, weight: .semibold)
+                                    .foregroundColor(MacrodexTheme.textPrimary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+
+                                if clause.body.isEmpty {
+                                    Text("No details available")
+                                        .macrodexFont(.callout)
+                                        .foregroundColor(MacrodexTheme.textSecondary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                } else {
+                                    MacrodexMarkdownView(
+                                        markdown: clause.body,
+                                        style: .content,
+                                        bodySize: 13,
+                                        codeSize: 12
+                                    )
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                            }
+                            .padding(.bottom, clause.id == clauses.last?.id ? 0 : 4)
+                        }
                     }
                 }
                 .padding(16)
@@ -1376,7 +1467,28 @@ private struct ReasoningClause: Identifiable, Equatable {
     let id: String
     let title: String
     let body: String
+    let sourceItemID: String
     let isLatest: Bool
+
+    func withSource(itemID: String) -> ReasoningClause {
+        ReasoningClause(
+            id: "\(itemID)-\(id)",
+            title: title,
+            body: body,
+            sourceItemID: itemID,
+            isLatest: isLatest
+        )
+    }
+
+    func withLatest(_ isLatest: Bool) -> ReasoningClause {
+        ReasoningClause(
+            id: id,
+            title: title,
+            body: body,
+            sourceItemID: sourceItemID,
+            isLatest: isLatest
+        )
+    }
 }
 
 private enum ReasoningClauseParser {
@@ -1479,6 +1591,7 @@ private enum ReasoningClauseParser {
                 id: "\(index)-\(title)",
                 title: title.isEmpty ? "Thinking" : title,
                 body: body,
+                sourceItemID: "",
                 isLatest: index == clauses.count - 1
             )
         }
