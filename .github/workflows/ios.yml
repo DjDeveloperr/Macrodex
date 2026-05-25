@@ -98,10 +98,8 @@ jobs:
             ASC_KEY_ID \
             ASC_ISSUER_ID \
             DEVELOPMENT_TEAM \
-            IOS_PROFILE_NAME \
             IOS_DISTRIBUTION_CERTIFICATE_P12_BASE64 \
-            IOS_DISTRIBUTION_CERTIFICATE_PASSWORD \
-            IOS_APP_STORE_PROVISIONING_PROFILE_BASE64
+            IOS_DISTRIBUTION_CERTIFICATE_PASSWORD
           do
             if [ -z "${!name:-}" ]; then
               echo "::error::$name is required for TestFlight uploads"
@@ -155,9 +153,6 @@ jobs:
           BASE64_INPUT="$IOS_DISTRIBUTION_CERTIFICATE_P12_BASE64"
           export BASE64_INPUT
           decode_base64 "$signing_dir/certificate.p12"
-          BASE64_INPUT="$IOS_APP_STORE_PROVISIONING_PROFILE_BASE64"
-          export BASE64_INPUT
-          decode_base64 "$signing_dir/profile.mobileprovision"
 
           keychain_password="$(openssl rand -base64 32)"
           keychain_path="$RUNNER_TEMP/app-signing.keychain-db"
@@ -173,29 +168,37 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain_path"
           security list-keychains -d user -s "$keychain_path" $(security list-keychains -d user | tr -d '"')
 
-          profile_plist="$signing_dir/profile.plist"
-          security cms -D -i "$signing_dir/profile.mobileprovision" > "$profile_plist"
-          profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$profile_plist")"
-          profile_name="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$profile_plist")"
-          profile_app_id="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$profile_plist")"
+          if [ -n "${IOS_APP_STORE_PROVISIONING_PROFILE_BASE64:-}" ] && [ -n "${IOS_PROFILE_NAME:-}" ]; then
+            BASE64_INPUT="$IOS_APP_STORE_PROVISIONING_PROFILE_BASE64"
+            export BASE64_INPUT
+            decode_base64 "$signing_dir/profile.mobileprovision"
 
-          expected_app_id="${DEVELOPMENT_TEAM}.com.dj.Macrodex"
-          if [ "$profile_app_id" != "$expected_app_id" ]; then
-            echo "::error::Provisioning profile is for $profile_app_id, expected $expected_app_id"
-            exit 1
+            profile_plist="$signing_dir/profile.plist"
+            security cms -D -i "$signing_dir/profile.mobileprovision" > "$profile_plist"
+            profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$profile_plist")"
+            profile_name="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$profile_plist")"
+            profile_app_id="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$profile_plist")"
+
+            expected_app_id="${DEVELOPMENT_TEAM}.com.dj.Macrodex"
+            if [ "$profile_app_id" != "$expected_app_id" ]; then
+              echo "::error::Provisioning profile is for $profile_app_id, expected $expected_app_id"
+              exit 1
+            fi
+
+            if [ "$profile_name" != "$IOS_PROFILE_NAME" ]; then
+              echo "::error::Provisioning profile name is $profile_name, expected $IOS_PROFILE_NAME"
+              exit 1
+            fi
+
+            mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+            cp "$signing_dir/profile.mobileprovision" "$HOME/Library/MobileDevice/Provisioning Profiles/$profile_uuid.mobileprovision"
+            echo "IOS_PROFILE_UUID=$profile_uuid" >> "$GITHUB_ENV"
+            echo "Installed App Store profile $profile_name ($profile_uuid)"
+          else
+            echo "No static App Store profile configured; Xcode automatic provisioning will create/update profiles."
           fi
-
-          if [ "$profile_name" != "$IOS_PROFILE_NAME" ]; then
-            echo "::error::Provisioning profile name is $profile_name, expected $IOS_PROFILE_NAME"
-            exit 1
-          fi
-
-          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
-          cp "$signing_dir/profile.mobileprovision" "$HOME/Library/MobileDevice/Provisioning Profiles/$profile_uuid.mobileprovision"
 
           echo "SIGNING_KEYCHAIN_PATH=$keychain_path" >> "$GITHUB_ENV"
-          echo "IOS_PROFILE_UUID=$profile_uuid" >> "$GITHUB_ENV"
-          echo "Installed App Store profile $profile_name ($profile_uuid)"
           security find-identity -v -p codesigning "$keychain_path"
 
       - name: Archive release
@@ -217,8 +220,9 @@ jobs:
             -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
             CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
-            IOS_CODE_SIGN_IDENTITY="$IOS_CODE_SIGN_IDENTITY" \
-            IOS_PROFILE_NAME="$IOS_PROFILE_NAME" \
+            CODE_SIGN_STYLE=Automatic \
+            CODE_SIGN_IDENTITY="$IOS_CODE_SIGN_IDENTITY" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
             OTHER_CODE_SIGN_FLAGS="--keychain $SIGNING_KEYCHAIN_PATH"
 
       - name: Export IPA
@@ -231,11 +235,9 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Clear dict' "$export_options"
           /usr/libexec/PlistBuddy -c 'Add :method string app-store-connect' "$export_options"
           /usr/libexec/PlistBuddy -c 'Add :destination string export' "$export_options"
-          /usr/libexec/PlistBuddy -c 'Add :signingStyle string manual' "$export_options"
+          /usr/libexec/PlistBuddy -c 'Add :signingStyle string automatic' "$export_options"
           /usr/libexec/PlistBuddy -c "Add :teamID string $DEVELOPMENT_TEAM" "$export_options"
           /usr/libexec/PlistBuddy -c "Add :signingCertificate string $IOS_CODE_SIGN_IDENTITY" "$export_options"
-          /usr/libexec/PlistBuddy -c 'Add :provisioningProfiles dict' "$export_options"
-          /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:com.dj.Macrodex string $IOS_PROFILE_NAME" "$export_options"
           /usr/libexec/PlistBuddy -c 'Add :manageAppVersionAndBuildNumber bool false' "$export_options"
           /usr/libexec/PlistBuddy -c 'Add :stripSwiftSymbols bool true' "$export_options"
           /usr/libexec/PlistBuddy -c 'Add :uploadSymbols bool true' "$export_options"
