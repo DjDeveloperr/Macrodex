@@ -221,7 +221,7 @@ jobs:
             DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
             CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
             CODE_SIGN_STYLE=Automatic \
-            CODE_SIGN_IDENTITY="$IOS_CODE_SIGN_IDENTITY" \
+            IOS_CODE_SIGN_IDENTITY="" \
             PROVISIONING_PROFILE_SPECIFIER="" \
             OTHER_CODE_SIGN_FLAGS="--keychain $SIGNING_KEYCHAIN_PATH"
 
@@ -237,7 +237,6 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Add :destination string export' "$export_options"
           /usr/libexec/PlistBuddy -c 'Add :signingStyle string automatic' "$export_options"
           /usr/libexec/PlistBuddy -c "Add :teamID string $DEVELOPMENT_TEAM" "$export_options"
-          /usr/libexec/PlistBuddy -c "Add :signingCertificate string $IOS_CODE_SIGN_IDENTITY" "$export_options"
           /usr/libexec/PlistBuddy -c 'Add :manageAppVersionAndBuildNumber bool false' "$export_options"
           /usr/libexec/PlistBuddy -c 'Add :stripSwiftSymbols bool true' "$export_options"
           /usr/libexec/PlistBuddy -c 'Add :uploadSymbols bool true' "$export_options"
