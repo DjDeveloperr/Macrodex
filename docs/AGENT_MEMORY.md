@@ -5,3 +5,4 @@
 - Composer controls should bottom-align as the text input grows; plus, search, voice, stop, and send buttons should not float vertically centered beside multiline text.
 - Dashboard keyboard lift must be computed from the unshifted composer frame so an existing offset is not applied twice after search sheets, food selections, or keyboard frame changes.
 - UI polish changes need simulator or device visual checks when feasible, especially composer, keyboard, drawer gestures, search popups, widgets, and Liquid Glass surfaces.
+- TestFlight build numbers must use Macrodex's timestamp format `YYYYMMDDHHMM`, not `GITHUB_RUN_NUMBER`; small numeric builds like `68` get buried behind existing timestamp builds. Verify with the CI `Set TestFlight build number` log and ASC/TestFlight showing the timestamp build at the top of the Public Beta group.
