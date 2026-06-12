@@ -343,83 +343,11 @@ struct HomeComposerView: View {
 
     private func foodSearchMatches(for query: String) -> [ComposerFoodSearchResult] {
         let store = CalorieTrackerStore.shared
-        let libraryMatches = store.libraryItems.compactMap { item -> (ComposerFoodSearchResult, Int)? in
-            let candidates = [item.name, item.brand, item.kind, item.sourceTitle] + item.aliases.map(Optional.some)
-            let score = candidates.compactMap { $0 }.compactMap { HomeFoodSearchScoring.score(candidate: $0, query: query) }.max()
-            guard let score else { return nil }
-            let title = item.brand.map { "\($0) \(item.name)" } ?? item.name
-            return (
-                ComposerFoodSearchResult(
-                    id: "library-\(item.id)",
-                    title: title,
-                    detail: item.detail,
-                    insertText: title,
-                    servingQuantity: item.defaultServingQty,
-                    servingUnit: item.defaultServingUnit,
-                    servingWeight: item.defaultServingWeight,
-                    calories: item.calories,
-                    protein: item.protein,
-                    carbs: item.carbs,
-                    fat: item.fat,
-                    source: item.sourceTitle,
-                    sourceURL: item.sourceURL,
-                    notes: item.notes,
-                    confidence: confidence(from: score + (item.isFavorite ? 12 : 0))
-                ),
-                score + (item.isFavorite ? 12 : 0)
-            )
-        }
-        let recentMatches = store.recentFoodMemories.compactMap { item -> (ComposerFoodSearchResult, Int)? in
-            let candidates = [item.title, item.displayName, item.brand, item.canonicalName]
-            let score = candidates.compactMap { $0 }.compactMap { HomeFoodSearchScoring.score(candidate: $0, query: query) }.max()
-            guard let score else { return nil }
-            return (
-                ComposerFoodSearchResult(
-                    id: "recent-\(item.id)",
-                    title: item.title,
-                    detail: item.detail,
-                    insertText: item.title,
-                    servingQuantity: item.defaultServingQty,
-                    servingUnit: item.defaultServingUnit,
-                    servingWeight: item.defaultServingWeight,
-                    calories: item.calories,
-                    protein: item.protein,
-                    carbs: item.carbs,
-                    fat: item.fat,
-                    source: "Recent food",
-                    notes: "Logged before",
-                    confidence: confidence(from: score + 6)
-                ),
-                score + 6
-            )
-        }
-        let standardMatches = StandardFoodDatabase.matches(query: query).map { food, score in
-            (
-                ComposerFoodSearchResult(
-                    id: "standard-\(food.id)",
-                    title: food.name,
-                    detail: food.detail,
-                    insertText: food.name,
-                    servingQuantity: food.servingQuantity,
-                    servingUnit: food.servingUnit,
-                    servingWeight: food.servingWeight,
-                    calories: food.calories,
-                    protein: food.protein,
-                    carbs: food.carbs,
-                    fat: food.fat,
-                    source: "Foundation food",
-                    notes: "Built-in common food estimate",
-                    confidence: confidence(from: score + 3)
-                ),
-                score + 3
-            )
-        }
-        return (libraryMatches + recentMatches + standardMatches)
-            .sorted { lhs, rhs in
-                if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
-                return lhs.0.title.localizedCaseInsensitiveCompare(rhs.0.title) == .orderedAscending
-            }
-            .map(\.0)
+        return FoodSearchSupport.composerSuggestions(
+            libraryItems: store.libraryItems,
+            recentFoods: store.recentFoodMemories,
+            query: query
+        )
     }
 
     private func confidence(from score: Int) -> Double {

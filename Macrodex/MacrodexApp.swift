@@ -541,6 +541,9 @@ private struct HomeNavigationView: View {
             .presentationDetents(mode == .camera ? [.large] : [.medium, .large])
             .presentationDragIndicator(.visible)
         }
+        .onAppear {
+            handlePendingAppIntentRoute()
+        }
     }
 
     @ViewBuilder
@@ -830,8 +833,8 @@ private struct HomeNavigationView: View {
     }
 
     @MainActor
-    private func startQuickThread(prompt: String, images: [UIImage]) async throws {
-        try await startDraftThread(prompt: prompt, images: images, skillMentions: [])
+    private func startQuickThread(prompt: String, images: [UIImage], dashboardDate: Date? = nil) async throws {
+        try await startDraftThread(prompt: prompt, images: images, skillMentions: [], dashboardDate: dashboardDate)
     }
 
     @MainActor
@@ -843,7 +846,8 @@ private struct HomeNavigationView: View {
     private func startDraftThread(
         prompt: String,
         images: [UIImage],
-        skillMentions: [SkillMentionSelection]
+        skillMentions: [SkillMentionSelection],
+        dashboardDate: Date? = nil
     ) async throws {
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedPrompt.isEmpty || !images.isEmpty else { return }
@@ -866,7 +870,7 @@ private struct HomeNavigationView: View {
         }
         let selectedModel = selectedModelOverride(for: serverId, requiresImageInput: !images.isEmpty)
         let selectedEffort = selectedReasoningOverride()
-        let config = launchConfig(serverId: serverId, model: selectedModel)
+        let config = launchConfig(serverId: serverId, model: selectedModel, dashboardDate: dashboardDate)
         workDir = cwd
         appState.currentCwd = cwd
 
@@ -922,16 +926,40 @@ private struct HomeNavigationView: View {
     private func launchConfig(
         serverId: String,
         model: String?,
-        threadKey: ThreadKey? = nil
+        threadKey: ThreadKey? = nil,
+        dashboardDate: Date? = nil
     ) -> AppThreadLaunchConfig {
+        let developerInstructions = AgentRuntimeInstructions.developerInstructions(for: threadKey)
+            + dashboardDateInstructions(for: dashboardDate)
         return AppThreadLaunchConfig(
             model: model ?? selectedModelOverride(for: serverId),
             approvalPolicy: appState.launchApprovalPolicy(for: nil),
             sandbox: appState.launchSandboxMode(for: nil),
-            developerInstructions: AgentRuntimeInstructions.developerInstructions(for: threadKey),
+            developerInstructions: developerInstructions,
             persistExtendedHistory: true
         )
     }
+
+    private func dashboardDateInstructions(for date: Date?) -> String {
+        guard let date else { return "" }
+        let absolute = date.formatted(.dateTime.weekday(.wide).month(.wide).day().year())
+        let iso = Self.dashboardIntentDateFormatter.string(from: date)
+        return """
+
+        Dashboard context:
+        - The user started this chat from the calorie dashboard.
+        - The selected dashboard date is \(absolute) (\(iso)).
+        - Treat calorie logging, meal review, and nutrition references as applying to that selected date unless the user explicitly says otherwise.
+        """
+    }
+
+    private static let dashboardIntentDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
 
     private func voicePermissionConfig() async -> (
         approvalPolicy: AppAskForApproval?,
@@ -989,8 +1017,8 @@ private struct HomeNavigationView: View {
     private var homeDashboard: some View {
         DashboardScreen(
             bottomInset: bottomInset,
-            onQuickComposerSend: { prompt, images in
-                try await startQuickThread(prompt: prompt, images: images)
+            onQuickComposerSend: { prompt, images, selectedDate in
+                try await startQuickThread(prompt: prompt, images: images, dashboardDate: selectedDate)
             },
             composerFocusRequestID: appState.homeComposerFocusRequestID
         )
@@ -1171,6 +1199,26 @@ private struct HomeNavigationView: View {
         navigationCoordinator.isDraftConversationActive = false
         navigationCoordinator.activeConversationKey = nil
         navigationPath.removeAll()
+    }
+
+    private func handlePendingAppIntentRoute() {
+        guard let defaults = UserDefaults(suiteName: MacrodexPalette.appGroupSuite),
+              let rawSection = defaults.string(forKey: "appIntent.pendingSection"),
+              let section = MacrodexIntentSection(rawValue: rawSection)
+        else {
+            return
+        }
+        defaults.removeObject(forKey: "appIntent.pendingSection")
+
+        switch section {
+        case .library:
+            showLibrary()
+        case .newChat:
+            showDashboard()
+            appState.requestHomeComposerFocus()
+        case .dashboard, .foodSearch, .goals:
+            showDashboard()
+        }
     }
 }
 
@@ -1571,7 +1619,8 @@ struct DashboardQuickComposerBar: View {
     @Environment(AppModel.self) private var appModel
     let bottomInset: CGFloat
     let focusRequestID: Int
-    let onSend: (String, [UIImage]) async throws -> Void
+    let selectedDate: Date
+    let onSend: (String, [UIImage], Date) async throws -> Void
 
     @State private var inputText = ""
     @State private var attachedImages: [UIImage] = []
@@ -1846,9 +1895,10 @@ struct DashboardQuickComposerBar: View {
         }
 
         let desiredGap: CGFloat = 5
-        let frameMaxY = composerFrame == .zero
+        let measuredFrameMaxY = composerFrame == .zero
             ? UIScreen.main.bounds.maxY - max(bottomInset, 0) - composerBottomPadding
             : composerFrame.maxY
+        let frameMaxY = keyboardVisible ? measuredFrameMaxY + keyboardLift : measuredFrameMaxY
         let lift = max(0, frameMaxY + desiredGap - keyboardTop)
         setKeyboardLift(lift, notification: notification)
     }
@@ -1888,7 +1938,7 @@ struct DashboardQuickComposerBar: View {
 
         Task {
             do {
-                try await onSend(prompt, images)
+                try await onSend(prompt, images, selectedDate)
                 await MainActor.run {
                     isSending = false
                 }
@@ -2085,6 +2135,9 @@ struct DashboardQuickComposerBar: View {
         isComposerFocused = true
         isFoodSearchMode = false
         clearFoodSearchState(cancelTask: true)
+        DispatchQueue.main.async {
+            updateKeyboardLift(notification: nil)
+        }
     }
 
     private func foodSearchSelection(for suggestion: ComposerFoodSearchResult) -> DashboardFoodSearchSelection? {

@@ -199,13 +199,7 @@ struct ConversationComposerPopupOverlayView: View {
                 } else if suggestions.isEmpty {
                     popupStateText("No food matches")
                 } else {
-                    let sortedSuggestions = suggestions.sorted { lhs, rhs in
-                        let lhsConfidence = lhs.confidence ?? 0
-                        let rhsConfidence = rhs.confidence ?? 0
-                        if lhsConfidence != rhsConfidence { return lhsConfidence > rhsConfidence }
-                        return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
-                    }
-                    let indexedSuggestions = Array(Array(sortedSuggestions.prefix(20)).enumerated())
+                    let indexedSuggestions = Array(Array(suggestions.prefix(20)).enumerated())
                     ForEach(indexedSuggestions, id: \.element.id) { item in
                         let index = item.offset
                         let suggestion = item.element
@@ -272,7 +266,7 @@ struct ConversationComposerPopupOverlayView: View {
             return loading ? 42 : 40
         }
         let visibleRows = min(suggestions.count, 20)
-        return min(max(CGFloat(visibleRows) * 84, 220), 320)
+        return min(CGFloat(visibleRows) * 74, 320)
     }
 
     @ViewBuilder
@@ -296,18 +290,12 @@ struct ConversationComposerPopupOverlayView: View {
                 content()
             }
             .frame(maxWidth: .infinity)
-            .frame(minHeight: preferredHeight, alignment: .bottom)
         }
         .scrollIndicators(.visible)
         .frame(height: preferredHeight)
         .frame(maxHeight: 320)
         .frame(maxWidth: .infinity)
-        .background(MacrodexTheme.surface.opacity(0.95))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(MacrodexTheme.border, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .modifier(GlassRectModifier(cornerRadius: 12, tint: MacrodexTheme.surface.opacity(0.34)))
         .padding(.horizontal, 12)
         .offset(y: -(max(56, bottomInset) + popupLift))
     }

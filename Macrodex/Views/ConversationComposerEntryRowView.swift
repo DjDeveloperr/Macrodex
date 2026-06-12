@@ -67,7 +67,7 @@ struct ConversationComposerEntryRowView: View {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 8) {
+        HStack(alignment: .bottom, spacing: 8) {
             if !voiceManager.isRecording && !voiceManager.isTranscribing && (!isTurnActive || keepsAttachmentButtonVisible) {
                 Button {
                     showAttachMenu = true
@@ -87,7 +87,7 @@ struct ConversationComposerEntryRowView: View {
                 )
             }
 
-            HStack(spacing: 0) {
+            HStack(alignment: .bottom, spacing: 0) {
                 ZStack(alignment: .topLeading) {
                     ConversationComposerTextView(
                         text: $inputText,
