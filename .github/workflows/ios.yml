@@ -207,6 +207,9 @@ jobs:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
+          # Keep the archive itself unsigned. The export step performs App Store
+          # signing; forcing a distribution identity here leaks into SwiftPM
+          # package targets and causes provisioning conflicts.
           xcodebuild clean archive \
             -project "$PROJECT" \
             -scheme "$SCHEME" \
@@ -221,9 +224,9 @@ jobs:
             DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
             CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
             CODE_SIGN_STYLE=Automatic \
-            CODE_SIGNING_ALLOWED=YES \
-            CODE_SIGNING_REQUIRED=YES \
-            CODE_SIGN_IDENTITY="$IOS_CODE_SIGN_IDENTITY" \
+            CODE_SIGNING_ALLOWED=NO \
+            IOS_CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
             OTHER_CODE_SIGN_FLAGS="--keychain $SIGNING_KEYCHAIN_PATH"
 
       - name: Export IPA
