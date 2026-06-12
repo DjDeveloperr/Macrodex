@@ -723,7 +723,16 @@ struct DashboardScreen: View {
             .sorted { $0.key < $1.key }
             .map { "\($0.key):\($0.value.totals.calories):\($0.value.logCount)" }
             .joined(separator: "|")
-        return "\(store.selectedDate.timeIntervalSince1970)|\(store.goal.calories)|\(store.goal.protein)|\(logKey)|\(weekKey)|\(store.recentFoodMemories.map(\.id).joined(separator: ","))"
+        let foodMemoryKey = store.recentFoodMemories
+            .map { item in
+                let mealKey = item.mealUseCounts
+                    .sorted { $0.key.rawValue < $1.key.rawValue }
+                    .map { "\($0.key.rawValue):\($0.value):\(item.mealLastUsedAtMs[$0.key] ?? 0)" }
+                    .joined(separator: ",")
+                return "\(item.id):\(item.totalUseCount):\(item.lastUsedAtMs ?? 0):\(mealKey)"
+            }
+            .joined(separator: "|")
+        return "\(store.selectedDate.timeIntervalSince1970)|\(store.goal.calories)|\(store.goal.protein)|\(logKey)|\(weekKey)|\(foodMemoryKey)"
     }
 
     @MainActor
@@ -840,7 +849,11 @@ struct DashboardScreen: View {
         let loggedFoodKeys = Set(store.todayLogs.map { Self.normalizedSuggestionKey($0.name) })
         let loggedMeals = Set(store.todayLogs.map(\.mealType))
 
-        for item in store.recentFoodMemories {
+        for item in FoodSearchSupport.rankedRecentFoods(
+            store.recentFoodMemories,
+            preferredMeal: preferredMeal,
+            limit: store.recentFoodMemories.count
+        ) {
             let meal = suggestedMeal(for: item, fallback: preferredMeal)
             guard !loggedFoodKeys.contains(Self.normalizedSuggestionKey(item.displayName)),
                   shouldSuggestMeal(meal, loggedMeals: loggedMeals, source: .canonical),
@@ -861,7 +874,11 @@ struct DashboardScreen: View {
                 calories: item.calories,
                 protein: item.protein,
                 carbs: item.carbs,
-                fat: item.fat
+                fat: item.fat,
+                mealUseCount: item.useCount(for: meal),
+                totalUseCount: item.totalUseCount,
+                mealLastUsedAtMs: item.lastUsedAtMs(for: meal),
+                lastUsedAtMs: item.lastUsedAtMs
             ))
         }
 
@@ -890,7 +907,11 @@ struct DashboardScreen: View {
                     calories: food.calories,
                     protein: food.protein,
                     carbs: food.carbs,
-                    fat: food.fat
+                    fat: food.fat,
+                    mealUseCount: 0,
+                    totalUseCount: 0,
+                    mealLastUsedAtMs: nil,
+                    lastUsedAtMs: nil
                 ))
             }
         }
@@ -943,8 +964,7 @@ struct DashboardScreen: View {
     }
 
     private func suggestedMeal(for item: CanonicalFoodItem, fallback: CalorieMealType) -> CalorieMealType {
-        guard let meal = item.lastMealType, meal != .other else { return fallback }
-        return meal
+        item.usualMeal(fallback: fallback)
     }
 
     private func shouldSuggestCalories(_ calories: Double) -> Bool {
@@ -961,16 +981,30 @@ struct DashboardScreen: View {
         if abs(left - right) > 0.001 {
             return left < right
         }
+        if lhs.mealUseCount != rhs.mealUseCount {
+            return lhs.mealUseCount > rhs.mealUseCount
+        }
+        if lhs.totalUseCount != rhs.totalUseCount {
+            return lhs.totalUseCount > rhs.totalUseCount
+        }
+        if (lhs.mealLastUsedAtMs ?? 0) != (rhs.mealLastUsedAtMs ?? 0) {
+            return (lhs.mealLastUsedAtMs ?? 0) > (rhs.mealLastUsedAtMs ?? 0)
+        }
         return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
     }
 
     private func dashboardSuggestionScore(_ suggestion: DashboardFoodSuggestion) -> Double {
         let target = dashboardSuggestionCalorieTarget(for: suggestion.mealType)
         let calorieFit = abs(suggestion.calories - target) / max(target, 1)
-        let mealPenalty = suggestion.mealType == CalorieMealType.currentDefault ? 0.0 : 0.28
+        let calorieWeight = suggestion.mealUseCount > 0 ? 0.42 : 0.9
+        let mealPenalty = suggestion.mealType == CalorieMealType.currentDefault ? 0.0 : 0.18
         let proteinBonus = min(suggestion.protein / 35, 1) * 0.12
-        let sourcePenalty = suggestion.source == .canonical ? -0.18 : 0.08
-        return calorieFit + mealPenalty + sourcePenalty - proteinBonus
+        let sourcePenalty = suggestion.source == .canonical ? 0.0 : 0.34
+        let missingMealHistoryPenalty = suggestion.source == .canonical && suggestion.mealUseCount == 0 ? 0.28 : 0.0
+        let mealHistoryBonus = min(Double(suggestion.mealUseCount), 12) * 0.11
+        let totalHistoryBonus = min(Double(suggestion.totalUseCount), 25) * 0.006
+        let recencyBonus = suggestion.mealLastUsedAtMs == nil ? 0.0 : 0.06
+        return (calorieFit * calorieWeight) + mealPenalty + sourcePenalty + missingMealHistoryPenalty - proteinBonus - mealHistoryBonus - totalHistoryBonus - recencyBonus
     }
 
     private func dashboardSuggestionCalorieTarget(for meal: CalorieMealType) -> Double {
@@ -1279,7 +1313,7 @@ struct CalorieLibraryScreen: View {
                     .buttonStyle(.plain)
                 }
 
-                ForEach(store.recentFoodMemories.prefix(10)) { item in
+                ForEach(FoodSearchSupport.rankedRecentFoods(store.recentFoodMemories, preferredMeal: .currentDefault, limit: 10)) { item in
                     FoodMemoryRow(item: item, onOpen: {
                         guard canOpenLibrarySheet else { return }
                         activeSheet = .recentFood(item)
@@ -1724,6 +1758,10 @@ private struct DashboardFoodSuggestion: Identifiable, Equatable {
     let protein: Double
     let carbs: Double
     let fat: Double
+    let mealUseCount: Int
+    let totalUseCount: Int
+    let mealLastUsedAtMs: Int64?
+    let lastUsedAtMs: Int64?
 }
 
 private struct MealSuggestionHeader: View {
@@ -3300,7 +3338,7 @@ private struct LibrarySearchScreen: View {
                 if !hasQuery, mode == .quickAdd {
                     if !store.recentFoodMemories.isEmpty {
                         Section("Recently Logged") {
-                            ForEach(store.recentFoodMemories.prefix(5)) { item in
+                            ForEach(FoodSearchSupport.rankedRecentFoods(store.recentFoodMemories, preferredMeal: .currentDefault, limit: 5)) { item in
                                 quickAddCanonicalRow(item)
                             }
                         }
@@ -3684,6 +3722,30 @@ private enum LibrarySearchEditor: Identifiable {
 }
 
 enum FoodSearchSupport {
+    static func rankedRecentFoods(
+        _ items: [CanonicalFoodItem],
+        preferredMeal: CalorieMealType = .currentDefault,
+        limit: Int = 5
+    ) -> [CanonicalFoodItem] {
+        Array(items.sorted { lhs, rhs in
+            let left = recentFoodScore(lhs, preferredMeal: preferredMeal)
+            let right = recentFoodScore(rhs, preferredMeal: preferredMeal)
+            if abs(left - right) > 0.001 {
+                return left > right
+            }
+            if lhs.useCount(for: preferredMeal) != rhs.useCount(for: preferredMeal) {
+                return lhs.useCount(for: preferredMeal) > rhs.useCount(for: preferredMeal)
+            }
+            if lhs.totalUseCount != rhs.totalUseCount {
+                return lhs.totalUseCount > rhs.totalUseCount
+            }
+            if (lhs.lastUsedAtMs ?? 0) != (rhs.lastUsedAtMs ?? 0) {
+                return (lhs.lastUsedAtMs ?? 0) > (rhs.lastUsedAtMs ?? 0)
+            }
+            return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+        }.prefix(limit))
+    }
+
     static func composerSuggestions(
         libraryItems: [CalorieLibraryItem],
         recentFoods: [CanonicalFoodItem],
@@ -3775,6 +3837,8 @@ enum FoodSearchSupport {
         return visibleItems.compactMap { item -> (result: ComposerFoodSearchResult, score: Int)? in
             let candidates = [item.title, item.displayName, item.brand, item.canonicalName]
             guard let score = score(values: candidates, query: query) else { return nil }
+            let mealBonus = min(item.useCount(for: .currentDefault), 12) * 24
+            let totalBonus = min(item.totalUseCount, 30) * 3
             return (
                 ComposerFoodSearchResult(
                     id: "recent-\(item.id)",
@@ -3790,9 +3854,9 @@ enum FoodSearchSupport {
                     fat: item.fat,
                     source: "Recent food",
                     notes: "Logged before",
-                    confidence: confidence(from: score + 6)
+                    confidence: confidence(from: score + 6 + mealBonus + totalBonus)
                 ),
-                score + 6
+                score + 6 + mealBonus + totalBonus
             )
         }
     }
@@ -4020,6 +4084,18 @@ enum FoodSearchSupport {
         if suggestion.id.hasPrefix("recent-") { return 1 }
         if suggestion.id.hasPrefix("standard-") { return 2 }
         return 3
+    }
+
+    private static func recentFoodScore(_ item: CanonicalFoodItem, preferredMeal: CalorieMealType) -> Double {
+        let preferredMealUseCount = item.useCount(for: preferredMeal)
+        let usualMeal = item.usualMeal(fallback: preferredMeal)
+        let usualMealBonus = usualMeal == preferredMeal ? 18.0 : 0.0
+        let wrongMealPenalty = preferredMealUseCount == 0 && usualMeal != preferredMeal ? 28.0 : 0.0
+        let mealHistory = min(Double(preferredMealUseCount), 20) * 4.0
+        let totalHistory = min(Double(item.totalUseCount), 60) * 0.45
+        let mealRecency = Double(item.lastUsedAtMs(for: preferredMeal) ?? 0) / 1_000_000_000_000.0
+        let globalRecency = Double(item.lastUsedAtMs ?? 0) / 2_000_000_000_000.0
+        return mealHistory + totalHistory + usualMealBonus + mealRecency + globalRecency - wrongMealPenalty
     }
 
     private static func searchTokens(_ value: String) -> [String] {
@@ -6061,7 +6137,10 @@ struct CanonicalFoodItem: Identifiable, Equatable {
     let defaultServingUnit: String?
     let defaultServingWeight: Double?
     let lastUsedAtMs: Int64?
+    let totalUseCount: Int
     let lastMealType: CalorieMealType?
+    let mealUseCounts: [CalorieMealType: Int]
+    let mealLastUsedAtMs: [CalorieMealType: Int64]
 
     var title: String {
         brand.map { "\($0) \(displayName)" } ?? displayName
@@ -6072,6 +6151,33 @@ struct CanonicalFoodItem: Identifiable, Equatable {
             defaultServingQty.map { "\($0.cleanString) \(unit)" }
         } ?? "serving"
         return "\(calories.cleanString) kcal · P \(protein.cleanString)g · \(serving)"
+    }
+
+    func useCount(for meal: CalorieMealType) -> Int {
+        mealUseCounts[meal, default: 0]
+    }
+
+    func lastUsedAtMs(for meal: CalorieMealType) -> Int64? {
+        mealLastUsedAtMs[meal]
+    }
+
+    func usualMeal(fallback: CalorieMealType) -> CalorieMealType {
+        let rankedMeals = mealUseCounts
+            .filter { meal, count in meal != .other && count > 0 }
+            .sorted { lhs, rhs in
+                if lhs.value != rhs.value { return lhs.value > rhs.value }
+                let leftLastUsed = mealLastUsedAtMs[lhs.key] ?? 0
+                let rightLastUsed = mealLastUsedAtMs[rhs.key] ?? 0
+                if leftLastUsed != rightLastUsed { return leftLastUsed > rightLastUsed }
+                return lhs.key.rawValue < rhs.key.rawValue
+            }
+        if let meal = rankedMeals.first?.key {
+            return meal
+        }
+        if let meal = lastMealType, meal != .other {
+            return meal
+        }
+        return fallback
     }
 }
 
@@ -8064,9 +8170,11 @@ final class CalorieTrackerStore: ObservableObject {
     private func fetchCanonicalFoods(whereClause: String, values: [Any?], limit: Int, offset: Int) throws -> [CanonicalFoodItem] {
         try query(
             """
+            /* macrodex: Loading food memories */
             SELECT id, canonical_name, display_name, brand, calories_kcal,
                    COALESCE(protein_g, 0), COALESCE(carbs_g, 0), COALESCE(fat_g, 0),
                    default_serving_qty, default_serving_unit, default_serving_weight_g, last_used_at_ms,
+                   use_count,
                    (
                        SELECT fle.meal_type
                        FROM food_log_items fli
@@ -8075,15 +8183,34 @@ final class CalorieTrackerStore: ObservableObject {
                          AND fli.canonical_food_id = canonical_food_items.id
                        ORDER BY fli.logged_at_ms DESC
                        LIMIT 1
-                   ) AS last_meal_type
+                   ) AS last_meal_type,
+                   COALESCE(meal_usage.meal_usage_summary, '') AS meal_usage_summary
             FROM canonical_food_items
+            LEFT JOIN (
+                SELECT canonical_food_id,
+                       GROUP_CONCAT(meal_type || ':' || meal_count || ':' || last_used_at_ms, '|') AS meal_usage_summary
+                FROM (
+                    SELECT fli.canonical_food_id,
+                           COALESCE(fle.meal_type, 'other') AS meal_type,
+                           COUNT(*) AS meal_count,
+                           MAX(fli.logged_at_ms) AS last_used_at_ms
+                    FROM food_log_items fli
+                    LEFT JOIN food_log_entries fle ON fle.id = fli.entry_id
+                        AND fle.deleted_at_ms IS NULL
+                    WHERE fli.deleted_at_ms IS NULL
+                        AND fli.canonical_food_id IS NOT NULL
+                    GROUP BY fli.canonical_food_id, COALESCE(fle.meal_type, 'other')
+                ) grouped_meal_usage
+                GROUP BY canonical_food_id
+            ) meal_usage ON meal_usage.canonical_food_id = canonical_food_items.id
             WHERE deleted_at_ms IS NULL AND \(whereClause)
             ORDER BY use_count DESC, COALESCE(last_used_at_ms, updated_at_ms) DESC, display_name COLLATE NOCASE
             LIMIT ? OFFSET ?
             """,
             values + [limit, offset]
         ) { statement in
-            CanonicalFoodItem(
+            let mealUsage = Self.parseCanonicalMealUsage(sqliteText(statement, 14))
+            return CanonicalFoodItem(
                 id: sqliteText(statement, 0),
                 canonicalName: sqliteText(statement, 1),
                 displayName: sqliteText(statement, 2),
@@ -8096,9 +8223,31 @@ final class CalorieTrackerStore: ObservableObject {
                 defaultServingUnit: sqliteOptionalText(statement, 9),
                 defaultServingWeight: sqliteOptionalDouble(statement, 10),
                 lastUsedAtMs: sqliteOptionalInt64(statement, 11),
-                lastMealType: sqliteOptionalText(statement, 12).map(CalorieMealType.init(databaseValue:))
+                totalUseCount: sqliteInt(statement, 12),
+                lastMealType: sqliteOptionalText(statement, 13).map(CalorieMealType.init(databaseValue:)),
+                mealUseCounts: mealUsage.counts,
+                mealLastUsedAtMs: mealUsage.lastUsedAtMs
             )
         }
+    }
+
+    private static func parseCanonicalMealUsage(_ summary: String) -> (
+        counts: [CalorieMealType: Int],
+        lastUsedAtMs: [CalorieMealType: Int64]
+    ) {
+        var counts: [CalorieMealType: Int] = [:]
+        var lastUsedAtMs: [CalorieMealType: Int64] = [:]
+        for component in summary.split(separator: "|") {
+            let parts = component.split(separator: ":", omittingEmptySubsequences: false)
+            guard parts.count == 3,
+                  let count = Int(parts[1]),
+                  let lastUsed = Int64(parts[2])
+            else { continue }
+            let meal = CalorieMealType(databaseValue: String(parts[0]))
+            counts[meal, default: 0] += count
+            lastUsedAtMs[meal] = max(lastUsedAtMs[meal] ?? 0, lastUsed)
+        }
+        return (counts, lastUsedAtMs)
     }
 
     private static func normalizedFoodKey(_ value: String) -> String {
@@ -8577,6 +8726,8 @@ final class CalorieTrackerStore: ObservableObject {
         created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL, deleted_at_ms INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_food_log_items_date_time ON food_log_items(log_date, logged_at_ms);
+    CREATE INDEX IF NOT EXISTS idx_food_log_items_canonical_usage
+        ON food_log_items(canonical_food_id, logged_at_ms) WHERE deleted_at_ms IS NULL;
     CREATE TABLE IF NOT EXISTS food_log_item_nutrients (
         log_item_id TEXT NOT NULL REFERENCES food_log_items(id) ON DELETE CASCADE,
         nutrient_key TEXT NOT NULL REFERENCES nutrient_definitions(key),
@@ -9725,7 +9876,7 @@ private enum MacrodexIntentBridge {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let items: [CanonicalFoodItem]
         if trimmed.isEmpty {
-            items = Array(store.recentFoodMemories.prefix(24))
+            items = FoodSearchSupport.rankedRecentFoods(store.recentFoodMemories, preferredMeal: .currentDefault, limit: 24)
         } else {
             items = await store.loadCanonicalFoods(query: trimmed, limit: 24, offset: 0)
         }

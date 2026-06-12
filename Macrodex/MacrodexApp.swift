@@ -2074,7 +2074,11 @@ struct DashboardQuickComposerBar: View {
     }
 
     private func recentFoodSuggestions() -> [ComposerFoodSearchResult] {
-        CalorieTrackerStore.shared.recentFoodMemories.prefix(5).map { item in
+        FoodSearchSupport.rankedRecentFoods(
+            CalorieTrackerStore.shared.recentFoodMemories,
+            preferredMeal: .currentDefault,
+            limit: 5
+        ).map { item in
             ComposerFoodSearchResult(
                 id: "recent-\(item.id)",
                 title: item.title,

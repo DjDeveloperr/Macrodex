@@ -1,5 +1,8 @@
 import SwiftUI
 import WidgetKit
+#if MACRODEX_WIDGET_RENDERER
+import UIKit
+#endif
 
 private enum MacrodexWidgetStore {
     static let suiteName = "group.com.dj.macrodex"
@@ -125,18 +128,25 @@ private struct MacrodexProgressWidgetView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     let entry: MacrodexProgressEntry
+    var renderedFamily: WidgetFamily?
 
     private var snapshot: MacrodexProgressSnapshot {
         entry.snapshot
     }
 
+    private var resolvedFamily: WidgetFamily {
+        renderedFamily ?? family
+    }
+
     var body: some View {
-        switch family {
+        switch resolvedFamily {
         case .systemMedium:
             mediumWidget
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .macrodexWidgetBackground()
         case .systemLarge:
             largeWidget
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .macrodexWidgetBackground()
         case .accessoryCircular:
             circularAccessory
@@ -146,86 +156,102 @@ private struct MacrodexProgressWidgetView: View {
             Text(inlineText)
         default:
             smallWidget
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .macrodexWidgetBackground()
         }
     }
 
     private var smallWidget: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            header
+        VStack(alignment: .leading, spacing: 10) {
+            widgetHeader(title: "Today", icon: "bolt.heart.fill", color: calorieTint, palette: palette)
 
             Spacer(minLength: 0)
 
-            ZStack {
-                ProgressRing(
-                    progress: snapshot.calorieProgress,
-                    lineWidth: 12,
-                    track: palette.track,
-                    fill: calorieTint
-                )
-                VStack(spacing: 2) {
-                    Text("\(Int(snapshot.caloriesConsumed.rounded()))")
-                        .font(.system(size: 30, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                    Text("of \(Int(snapshot.calorieGoal.rounded()))")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
+            VStack(alignment: .leading, spacing: 1) {
+                Text(remainingHeadline)
+                    .font(.system(size: remainingIsNearGoal ? 25 : 34, weight: .bold, design: .rounded))
+                    .foregroundStyle(calorieTint)
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                if !remainingIsNearGoal {
+                    Text(remainingCaption)
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(palette.textSecondary)
+                        .lineLimit(1)
                 }
             }
-            .frame(maxWidth: .infinity)
 
-            remainingPill
+            WidgetProgressBar(progress: snapshot.calorieProgress, color: calorieTint, palette: palette, height: 8)
+
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text(calorieSummary)
+                    .font(.caption2.monospacedDigit().weight(.bold))
+                    .foregroundStyle(palette.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                Spacer(minLength: 2)
+                Text("\(snapshot.logCount) logs")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(palette.textSecondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+
+            HStack(spacing: 5) {
+                MacroMini(label: "P", value: snapshot.proteinConsumed, color: palette.protein)
+                MacroMini(label: "C", value: snapshot.carbsConsumed, color: palette.carbs)
+                MacroMini(label: "F", value: snapshot.fatConsumed, color: palette.fat)
+            }
         }
-        .padding(16)
+        .padding(14)
     }
 
     private var mediumWidget: some View {
-        HStack(spacing: 16) {
-            VStack(alignment: .leading, spacing: 10) {
-                header
-                Text(remainingText)
-                    .font(.system(size: 24, weight: .bold, design: .rounded))
-                    .foregroundStyle(calorieTint)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.74)
-                Text("\(snapshot.logCount) logged today")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+        HStack(alignment: .top, spacing: 18) {
+            VStack(alignment: .leading, spacing: 8) {
+                widgetHeader(title: "Today", icon: "bolt.heart.fill", color: calorieTint, palette: palette)
                 Spacer(minLength: 0)
-                remainingPill
+                Text(remainingText)
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundStyle(calorieTint)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.62)
+                Text(calorieSummary)
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(palette.textSecondary)
+                    .lineLimit(1)
+                WidgetProgressBar(progress: snapshot.calorieProgress, color: calorieTint, palette: palette, height: 8)
+                Text("\(snapshot.logCount) logged")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(palette.textSecondary)
             }
+            .frame(width: 132, alignment: .leading)
 
-            Spacer(minLength: 0)
-
-            HStack(spacing: 10) {
-                MacroColumn(
-                    title: "Cal",
-                    value: Int(snapshot.caloriesConsumed.rounded()),
-                    goal: Int(snapshot.calorieGoal.rounded()),
-                    progress: snapshot.calorieProgress,
-                    color: calorieTint
-                )
-                MacroColumn(
-                    title: "P",
+            VStack(spacing: 10) {
+                MacroBar(
+                    title: "Protein",
                     value: Int(snapshot.proteinConsumed.rounded()),
                     goal: Int(snapshot.proteinGoal.rounded()),
                     progress: snapshot.proteinProgress,
-                    color: palette.protein
+                    color: palette.protein,
+                    palette: palette
                 )
-                MacroColumn(
-                    title: "C",
+                MacroBar(
+                    title: "Carbs",
                     value: Int(snapshot.carbsConsumed.rounded()),
                     goal: Int(snapshot.carbsGoal.rounded()),
                     progress: snapshot.carbsProgress,
-                    color: palette.carbs
+                    color: palette.carbs,
+                    palette: palette
                 )
-                MacroColumn(
-                    title: "F",
+                MacroBar(
+                    title: "Fat",
                     value: Int(snapshot.fatConsumed.rounded()),
                     goal: Int(snapshot.fatGoal.rounded()),
                     progress: snapshot.fatProgress,
-                    color: palette.fat
+                    color: palette.fat,
+                    palette: palette
                 )
             }
         }
@@ -233,32 +259,33 @@ private struct MacrodexProgressWidgetView: View {
     }
 
     private var largeWidget: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            header
-            HStack(alignment: .center, spacing: 18) {
-                ZStack {
-                    ProgressRing(progress: snapshot.calorieProgress, lineWidth: 14, track: palette.track, fill: calorieTint)
-                    VStack(spacing: 3) {
-                        Text("\(Int(snapshot.caloriesConsumed.rounded()))")
-                            .font(.system(size: 34, weight: .bold, design: .rounded))
-                            .monospacedDigit()
-                        Text(remainingText)
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(calorieTint)
-                    }
-                }
-                .frame(width: 128, height: 128)
+        VStack(alignment: .leading, spacing: 14) {
+            widgetHeader(title: "Macrodex", icon: "bolt.heart.fill", color: calorieTint, palette: palette)
 
-                VStack(spacing: 10) {
-                    MacroBar(title: "Protein", value: snapshot.proteinConsumed, goal: snapshot.proteinGoal, color: palette.protein)
-                    MacroBar(title: "Carbs", value: snapshot.carbsConsumed, goal: snapshot.carbsGoal, color: palette.carbs)
-                    MacroBar(title: "Fat", value: snapshot.fatConsumed, goal: snapshot.fatGoal, color: palette.fat)
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(remainingText)
+                        .font(.system(size: 31, weight: .bold, design: .rounded))
+                        .foregroundStyle(calorieTint)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                    Spacer(minLength: 0)
+                    Text("\(Int(snapshot.caloriesConsumed.rounded())) kcal")
+                        .font(.caption.monospacedDigit().weight(.bold))
+                        .foregroundStyle(palette.textSecondary)
                 }
+                WidgetProgressBar(progress: snapshot.calorieProgress, color: calorieTint, palette: palette, height: 10)
+                Text("\(calorieSummary) today · \(snapshot.logCount) logged")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(palette.textSecondary)
+                    .lineLimit(1)
             }
-            MealBreakdownView(meals: snapshot.resolvedMealCalories, palette: palette)
-            WeekSparkline(points: snapshot.resolvedWeekCalories, goal: snapshot.calorieGoal, color: calorieTint)
+
+            MacroSummaryStrip(snapshot: snapshot, palette: palette)
+            MealGridView(meals: snapshot.resolvedMealCalories, palette: palette)
+            WeekSparkline(points: snapshot.resolvedWeekCalories, goal: snapshot.calorieGoal, color: calorieTint, palette: palette, compact: true)
         }
-        .padding(18)
+        .padding(16)
     }
 
     private var circularAccessory: some View {
@@ -283,36 +310,12 @@ private struct MacrodexProgressWidgetView: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
-            ProgressView(value: min(snapshot.calorieProgress, 1))
-                .tint(calorieTint)
+            WidgetProgressBar(progress: snapshot.calorieProgress, color: calorieTint, palette: palette, height: 4)
             Text(remainingText)
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
-    }
-
-    private var header: some View {
-        HStack(spacing: 7) {
-            Image(systemName: "bolt.heart.fill")
-                .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(palette.accent)
-            Text("Macrodex")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.primary)
-            Spacer(minLength: 0)
-        }
-    }
-
-    private var remainingPill: some View {
-        Text(remainingText)
-            .font(.caption2.weight(.bold))
-            .foregroundStyle(calorieTint)
-            .lineLimit(1)
-            .minimumScaleFactor(0.72)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
-            .background(calorieTint.opacity(colorScheme == .dark ? 0.18 : 0.13), in: Capsule())
     }
 
     private var remainingText: String {
@@ -337,6 +340,22 @@ private struct MacrodexProgressWidgetView: View {
         return "\(abs(remaining)) kcal over"
     }
 
+    private var remainingIsNearGoal: Bool {
+        abs(snapshot.remainingCalories) <= 20
+    }
+
+    private var remainingHeadline: String {
+        remainingIsNearGoal ? "Near goal" : "\(Int(abs(snapshot.remainingCalories).rounded()))"
+    }
+
+    private var remainingCaption: String {
+        snapshot.remainingCalories >= 0 ? "kcal left" : "kcal over"
+    }
+
+    private var calorieSummary: String {
+        "\(Int(snapshot.caloriesConsumed.rounded())) / \(Int(snapshot.calorieGoal.rounded()))"
+    }
+
     private var calorieTint: Color {
         snapshot.remainingCalories < -20 ? palette.warning : palette.accent
     }
@@ -346,65 +365,178 @@ private struct MacrodexProgressWidgetView: View {
     }
 }
 
-private struct MacroColumn: View {
-    let title: String
-    let value: Int
-    let goal: Int
-    let progress: Double
+private struct MacroMini: View {
+    let label: String
+    let value: Double
     let color: Color
 
     var body: some View {
-        VStack(spacing: 7) {
-            ProgressRing(progress: progress, lineWidth: 7, track: Color.primary.opacity(0.1), fill: color)
-                .frame(width: 42, height: 42)
-                .overlay {
-                    Text(title)
-                        .font(.system(size: 12, weight: .black, design: .rounded))
-                        .foregroundStyle(color)
-                }
-            VStack(spacing: 1) {
-                Text("\(value)")
-                    .font(.caption.weight(.bold))
-                    .monospacedDigit()
-                Text("/\(max(goal, 0))")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            }
+        HStack(spacing: 3) {
+            Circle()
+                .fill(color)
+                .frame(width: 5, height: 5)
+            Text("\(label) \(Int(value.rounded()))")
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .foregroundStyle(.primary.opacity(0.76))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
         }
-        .frame(width: 46)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
 private struct MacroBar: View {
     let title: String
-    let value: Double
-    let goal: Double
+    let value: Int
+    let goal: Int
+    let progress: Double
     let color: Color
-
-    private var progress: Double {
-        guard goal > 0 else { return 0 }
-        return min(max(value / goal, 0), 1.15)
-    }
+    let palette: WidgetPalette
+    var compact = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
+        VStack(alignment: .leading, spacing: compact ? 3 : 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(title)
-                    .font(.caption.weight(.semibold))
-                Spacer()
-                Text("\(Int(value.rounded()))/\(Int(goal.rounded()))g")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
+                    .font(compact ? .caption2.weight(.bold) : .caption.weight(.bold))
+                    .foregroundStyle(palette.textPrimary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Text("\(value)/\(max(goal, 0))g")
+                    .font((compact ? Font.system(size: 10, weight: .bold) : .caption2.weight(.bold)).monospacedDigit())
+                    .foregroundStyle(palette.textSecondary)
+                    .lineLimit(1)
             }
-            ProgressView(value: min(progress, 1))
-                .tint(color)
+            WidgetProgressBar(progress: progress, color: color, palette: palette, height: compact ? 5 : 6)
         }
     }
 }
 
+private struct MacroSummaryStrip: View {
+    let snapshot: MacrodexProgressSnapshot
+    let palette: WidgetPalette
+
+    var body: some View {
+        HStack(spacing: 10) {
+            CompactMacroMetric(title: "Protein", value: snapshot.proteinConsumed, goal: snapshot.proteinGoal, progress: snapshot.proteinProgress, color: palette.protein, palette: palette)
+            CompactMacroMetric(title: "Carbs", value: snapshot.carbsConsumed, goal: snapshot.carbsGoal, progress: snapshot.carbsProgress, color: palette.carbs, palette: palette)
+            CompactMacroMetric(title: "Fat", value: snapshot.fatConsumed, goal: snapshot.fatGoal, progress: snapshot.fatProgress, color: palette.fat, palette: palette)
+        }
+    }
+}
+
+private struct CompactMacroMetric: View {
+    let title: String
+    let value: Double
+    let goal: Double
+    let progress: Double
+    let color: Color
+    let palette: WidgetPalette
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(palette.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                Spacer(minLength: 0)
+                Text("\(Int(value.rounded()))")
+                    .font(.system(size: 11, weight: .bold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(palette.textSecondary)
+            }
+            WidgetProgressBar(progress: progress, color: color, palette: palette, height: 5)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct WidgetProgressBar: View {
+    let progress: Double
+    let color: Color
+    let palette: WidgetPalette
+    let height: CGFloat
+
+    var body: some View {
+        GeometryReader { proxy in
+            let width = max(proxy.size.width, 0)
+            let clamped = min(max(progress, 0), 1)
+            ZStack(alignment: .leading) {
+                Capsule(style: .continuous)
+                    .fill(palette.track)
+                Capsule(style: .continuous)
+                    .fill(color)
+                    .frame(width: width * CGFloat(clamped))
+                if progress > 1 {
+                    Capsule(style: .continuous)
+                        .fill(palette.warning)
+                        .frame(width: width * CGFloat(min(progress - 1, 0.18) / 0.18) * 0.18)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+            }
+        }
+        .frame(height: height)
+    }
+}
+
 private struct MealBreakdownView: View {
+    let meals: [String: Double]
+    let palette: WidgetPalette
+    var compact = true
+    var showsTitle = true
+
+    private var rows: [(String, Double, Color)] {
+        [
+            ("Breakfast", meals["breakfast"] ?? 0, palette.protein),
+            ("Lunch", meals["lunch"] ?? 0, palette.carbs),
+            ("Dinner", meals["dinner"] ?? 0, palette.fat),
+            ("Snack", meals["snack"] ?? 0, palette.accent)
+        ]
+    }
+
+    private var maxMealCalories: Double {
+        max(rows.map(\.1).max() ?? 1, 1)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: compact ? 7 : 8) {
+            if showsTitle {
+                Text("Meals")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(palette.textSecondary)
+            }
+            ForEach(rows, id: \.0) { row in
+                mealRow(row)
+            }
+        }
+    }
+
+    private func mealRow(_ row: (String, Double, Color)) -> some View {
+        VStack(alignment: .leading, spacing: compact ? 0 : 4) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(row.2)
+                    .frame(width: 7, height: 7)
+                Text(row.0)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(palette.textPrimary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Text("\(Int(row.1.rounded()))")
+                    .font(.caption.monospacedDigit().weight(.bold))
+                    .foregroundStyle(palette.textPrimary)
+            }
+            if !compact {
+                WidgetProgressBar(progress: row.1 / maxMealCalories, color: row.2, palette: palette, height: 4)
+                    .padding(.leading, 15)
+            }
+        }
+    }
+}
+
+private struct MealGridView: View {
     let meals: [String: Double]
     let palette: WidgetPalette
 
@@ -421,17 +553,23 @@ private struct MealBreakdownView: View {
         VStack(alignment: .leading, spacing: 7) {
             Text("Meals")
                 .font(.caption.weight(.bold))
-                .foregroundStyle(.secondary)
-            ForEach(rows, id: \.0) { row in
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(row.2)
-                        .frame(width: 7, height: 7)
-                    Text(row.0)
-                        .font(.caption.weight(.semibold))
-                    Spacer()
-                    Text("\(Int(row.1.rounded()))")
-                        .font(.caption.monospacedDigit().weight(.bold))
+                .foregroundStyle(palette.textSecondary)
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 7) {
+                ForEach(rows, id: \.0) { row in
+                    HStack(spacing: 7) {
+                        Circle()
+                            .fill(row.2)
+                            .frame(width: 6, height: 6)
+                        Text(row.0)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(palette.textPrimary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                        Spacer(minLength: 0)
+                        Text("\(Int(row.1.rounded()))")
+                            .font(.system(size: 11, weight: .bold, design: .rounded).monospacedDigit())
+                            .foregroundStyle(palette.textPrimary)
+                    }
                 }
             }
         }
@@ -442,54 +580,84 @@ private struct WeekSparkline: View {
     let points: [MacrodexProgressSnapshot.DayPoint]
     let goal: Double
     let color: Color
+    let palette: WidgetPalette
+    var compact = false
 
     private var maxValue: Double {
         max(points.map(\.calories).max() ?? 1, goal, 1)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text("7 day calories")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.secondary)
-            HStack(alignment: .bottom, spacing: 5) {
-                ForEach(Array(points.enumerated()), id: \.offset) { _, point in
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .fill(point.calories > goal ? WidgetPalette(colorScheme: .light).warning : color)
-                        .frame(height: max(8, CGFloat(point.calories / maxValue) * 44))
-                        .overlay(alignment: .bottom) {
-                            if point.calories > goal {
-                                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                    .stroke(Color.orange.opacity(0.7), lineWidth: 1)
-                            }
-                        }
+        VStack(alignment: .leading, spacing: compact ? 5 : 7) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(compact ? "7 days" : "7 day calories")
+                    .font((compact ? Font.caption2 : .caption).weight(.bold))
+                    .foregroundStyle(palette.textSecondary)
+                Spacer(minLength: 0)
+                if let average = weekAverage {
+                    Text("\(Int(average.rounded())) avg")
+                        .font((compact ? Font.system(size: 10, weight: .bold) : .caption2.weight(.bold)).monospacedDigit())
+                        .foregroundStyle(palette.textSecondary)
+                        .lineLimit(1)
                 }
             }
-            .frame(height: 48, alignment: .bottom)
+            ZStack(alignment: .bottomLeading) {
+                HStack(alignment: .bottom, spacing: 5) {
+                    ForEach(Array(points.enumerated()), id: \.offset) { _, point in
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .fill(point.calories > goal ? palette.warning : color)
+                            .frame(height: max(compact ? 6 : 7, CGFloat(point.calories / maxValue) * chartHeight))
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .bottom)
+
+                if goal > 0 {
+                    Rectangle()
+                        .fill(palette.textSecondary.opacity(0.34))
+                        .frame(height: 1)
+                        .offset(y: -CGFloat(min(goal / maxValue, 1)) * chartHeight)
+                }
+            }
+            .frame(height: chartHeight + 4, alignment: .bottom)
         }
+    }
+
+    private var weekAverage: Double? {
+        guard !points.isEmpty else { return nil }
+        return points.reduce(0) { $0 + $1.calories } / Double(points.count)
+    }
+
+    private var chartHeight: CGFloat {
+        compact ? 34 : 44
     }
 }
 
 private struct MacrodexMacrosWidgetView: View {
+    @Environment(\.widgetFamily) private var family
     @Environment(\.colorScheme) private var colorScheme
     let entry: MacrodexProgressEntry
+    var renderedFamily: WidgetFamily?
 
     private var snapshot: MacrodexProgressSnapshot { entry.snapshot }
     private var palette: WidgetPalette { WidgetPalette(colorScheme: colorScheme) }
+    private var isSmall: Bool { (renderedFamily ?? family) == .systemSmall }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            widgetHeader(title: "Macros", icon: "chart.bar.fill", color: palette.protein)
-            MacroBar(title: "Protein", value: snapshot.proteinConsumed, goal: snapshot.proteinGoal, color: palette.protein)
-            MacroBar(title: "Carbs", value: snapshot.carbsConsumed, goal: snapshot.carbsGoal, color: palette.carbs)
-            MacroBar(title: "Fat", value: snapshot.fatConsumed, goal: snapshot.fatGoal, color: palette.fat)
+        VStack(alignment: .leading, spacing: isSmall ? 8 : 12) {
+            widgetHeader(title: "Macros", icon: "chart.bar.fill", color: palette.protein, palette: palette)
+            MacroBar(title: "Protein", value: Int(snapshot.proteinConsumed.rounded()), goal: Int(snapshot.proteinGoal.rounded()), progress: snapshot.proteinProgress, color: palette.protein, palette: palette, compact: isSmall)
+            MacroBar(title: "Carbs", value: Int(snapshot.carbsConsumed.rounded()), goal: Int(snapshot.carbsGoal.rounded()), progress: snapshot.carbsProgress, color: palette.carbs, palette: palette, compact: isSmall)
+            MacroBar(title: "Fat", value: Int(snapshot.fatConsumed.rounded()), goal: Int(snapshot.fatGoal.rounded()), progress: snapshot.fatProgress, color: palette.fat, palette: palette, compact: isSmall)
             Spacer(minLength: 0)
             Text("\(Int(snapshot.caloriesConsumed.rounded()))/\(Int(snapshot.calorieGoal.rounded())) kcal")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.secondary)
+                .font((isSmall ? Font.caption2 : .caption).weight(.bold))
+                .foregroundStyle(palette.textSecondary)
                 .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
         }
-        .padding(16)
+        .padding(isSmall ? 14 : 16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .macrodexWidgetBackground()
     }
 }
@@ -498,85 +666,71 @@ private struct MacrodexMealsWidgetView: View {
     @Environment(\.widgetFamily) private var family
     @Environment(\.colorScheme) private var colorScheme
     let entry: MacrodexProgressEntry
+    var renderedFamily: WidgetFamily?
 
     private var snapshot: MacrodexProgressSnapshot { entry.snapshot }
     private var palette: WidgetPalette { WidgetPalette(colorScheme: colorScheme) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            widgetHeader(title: "Meals", icon: "fork.knife.circle.fill", color: palette.accent)
-            MealBreakdownView(meals: snapshot.resolvedMealCalories, palette: palette)
-            if family != .systemSmall {
+            widgetHeader(title: "Meals", icon: "fork.knife.circle.fill", color: palette.accent, palette: palette)
+            MealBreakdownView(meals: snapshot.resolvedMealCalories, palette: palette, showsTitle: false)
+            if (renderedFamily ?? family) != .systemSmall {
                 Spacer(minLength: 0)
                 Text("\(snapshot.logCount) logged today")
                     .font(.caption.weight(.bold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(palette.textSecondary)
             }
         }
         .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .macrodexWidgetBackground()
     }
 }
 
 private struct MacrodexWeekWidgetView: View {
+    @Environment(\.widgetFamily) private var family
     @Environment(\.colorScheme) private var colorScheme
     let entry: MacrodexProgressEntry
+    var renderedFamily: WidgetFamily?
 
     private var snapshot: MacrodexProgressSnapshot { entry.snapshot }
     private var palette: WidgetPalette { WidgetPalette(colorScheme: colorScheme) }
+    private var isSmall: Bool { (renderedFamily ?? family) == .systemSmall }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            widgetHeader(title: "Week", icon: "calendar", color: palette.accent)
-            WeekSparkline(points: snapshot.resolvedWeekCalories, goal: snapshot.calorieGoal, color: palette.accent)
+        VStack(alignment: .leading, spacing: isSmall ? 10 : 14) {
+            widgetHeader(title: "Week", icon: "calendar", color: palette.accent, palette: palette)
+            WeekSparkline(points: snapshot.resolvedWeekCalories, goal: snapshot.calorieGoal, color: palette.accent, palette: palette, compact: isSmall)
             Spacer(minLength: 0)
             HStack {
                 Text("Today")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .font((isSmall ? Font.caption2 : .caption).weight(.semibold))
+                    .foregroundStyle(palette.textSecondary)
                 Spacer()
                 Text("\(Int(snapshot.caloriesConsumed.rounded()))")
-                    .font(.headline.monospacedDigit().weight(.bold))
+                    .font((isSmall ? Font.title3 : .headline).monospacedDigit().weight(.bold))
+                    .foregroundStyle(palette.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.74)
             }
         }
-        .padding(16)
+        .padding(isSmall ? 14 : 16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .macrodexWidgetBackground()
     }
 }
 
-private func widgetHeader(title: String, icon: String, color: Color) -> some View {
+private func widgetHeader(title: String, icon: String, color: Color, palette: WidgetPalette) -> some View {
     HStack(spacing: 7) {
         Image(systemName: icon)
             .font(.system(size: 14, weight: .bold))
             .foregroundStyle(color)
         Text(title)
             .font(.caption.weight(.bold))
+            .foregroundStyle(palette.textPrimary)
+            .lineLimit(1)
         Spacer(minLength: 0)
-    }
-}
-
-private struct ProgressRing: View {
-    let progress: Double
-    let lineWidth: CGFloat
-    let track: Color
-    let fill: Color
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .stroke(track, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-            Circle()
-                .trim(from: 0, to: min(progress, 1))
-                .stroke(fill, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-                .rotationEffect(.degrees(-90))
-            if progress > 1 {
-                Circle()
-                    .trim(from: 0, to: min(progress - 1, 0.15) / 0.15)
-                    .stroke(Color.orange, style: StrokeStyle(lineWidth: max(lineWidth * 0.45, 3), lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-            }
-        }
-        .aspectRatio(1, contentMode: .fit)
     }
 }
 
@@ -588,21 +742,50 @@ private struct WidgetPalette {
     var carbs: Color { Color(red: 0.94, green: 0.58, blue: 0.18) }
     var fat: Color { Color(red: 0.74, green: 0.47, blue: 0.95) }
     var warning: Color { Color(red: 0.98, green: 0.47, blue: 0.23) }
-    var track: Color { Color.primary.opacity(colorScheme == .dark ? 0.16 : 0.10) }
+    var backgroundTop: Color { Color(uiColor: colorScheme == .dark ? .secondarySystemBackground : .systemBackground) }
+    var backgroundBottom: Color { Color(uiColor: colorScheme == .dark ? .systemBackground : .secondarySystemBackground) }
+    var surfaceGlow: Color { accent.opacity(colorScheme == .dark ? 0.18 : 0.09) }
+    var textPrimary: Color { Color(uiColor: .label) }
+    var textSecondary: Color { Color(uiColor: .secondaryLabel) }
+    var track: Color { Color.primary.opacity(colorScheme == .dark ? 0.16 : 0.09) }
+}
+
+private struct WidgetSurfaceBackground: View {
+    let palette: WidgetPalette
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            LinearGradient(
+                colors: [palette.backgroundTop, palette.backgroundBottom],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            RadialGradient(
+                colors: [palette.surfaceGlow, .clear],
+                center: .topLeading,
+                startRadius: 0,
+                endRadius: 180
+            )
+        }
+    }
+}
+
+private struct MacrodexWidgetBackgroundModifier: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        let palette = WidgetPalette(colorScheme: colorScheme)
+        content
+            .background(WidgetSurfaceBackground(palette: palette))
+            .containerBackground(for: .widget) {
+                WidgetSurfaceBackground(palette: palette)
+            }
+    }
 }
 
 private extension View {
     func macrodexWidgetBackground() -> some View {
-        containerBackground(for: .widget) {
-            LinearGradient(
-                colors: [
-                    Color(uiColor: .systemBackground),
-                    Color(uiColor: .secondarySystemBackground)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        }
+        modifier(MacrodexWidgetBackgroundModifier())
     }
 }
 
@@ -616,6 +799,7 @@ struct MacrodexProgressWidget: Widget {
         .configurationDisplayName("Macrodex Progress")
         .description("Glance at today's calories and macro progress.")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge, .accessoryInline, .accessoryCircular, .accessoryRectangular])
+        .contentMarginsDisabled()
     }
 }
 
@@ -629,6 +813,7 @@ struct MacrodexMacrosWidget: Widget {
         .configurationDisplayName("Macrodex Macros")
         .description("Track protein, carbs, fat, and calories.")
         .supportedFamilies([.systemSmall, .systemMedium])
+        .contentMarginsDisabled()
     }
 }
 
@@ -642,6 +827,7 @@ struct MacrodexMealsWidget: Widget {
         .configurationDisplayName("Macrodex Meals")
         .description("See calories by meal for today.")
         .supportedFamilies([.systemSmall, .systemMedium])
+        .contentMarginsDisabled()
     }
 }
 
@@ -655,9 +841,11 @@ struct MacrodexWeekWidget: Widget {
         .configurationDisplayName("Macrodex Week")
         .description("Review your seven-day calorie trend.")
         .supportedFamilies([.systemSmall, .systemMedium])
+        .contentMarginsDisabled()
     }
 }
 
+#if !MACRODEX_WIDGET_RENDERER
 @main
 struct MacrodexWidgets: WidgetBundle {
     var body: some Widget {
@@ -667,3 +855,56 @@ struct MacrodexWidgets: WidgetBundle {
         MacrodexWeekWidget()
     }
 }
+#endif
+
+#if MACRODEX_WIDGET_RENDERER
+@main
+enum MacrodexWidgetRenderCLI {
+    @MainActor
+    static func main() {
+        let outputPath = ProcessInfo.processInfo.environment["MACRODEX_WIDGET_RENDER_DIR"] ?? "/tmp/macrodex-widget-renders"
+        let outputURL = URL(fileURLWithPath: outputPath, isDirectory: true)
+        try? FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
+
+        let entry = MacrodexProgressEntry(date: Date(), snapshot: .placeholder)
+        let renders: [(name: String, family: WidgetFamily, size: CGSize, view: AnyView)] = [
+            ("progress-small", .systemSmall, CGSize(width: 158, height: 158), AnyView(MacrodexProgressWidgetView(entry: entry, renderedFamily: .systemSmall))),
+            ("progress-medium", .systemMedium, CGSize(width: 338, height: 158), AnyView(MacrodexProgressWidgetView(entry: entry, renderedFamily: .systemMedium))),
+            ("progress-large", .systemLarge, CGSize(width: 338, height: 354), AnyView(MacrodexProgressWidgetView(entry: entry, renderedFamily: .systemLarge))),
+            ("macros-small", .systemSmall, CGSize(width: 158, height: 158), AnyView(MacrodexMacrosWidgetView(entry: entry, renderedFamily: .systemSmall))),
+            ("macros-medium", .systemMedium, CGSize(width: 338, height: 158), AnyView(MacrodexMacrosWidgetView(entry: entry, renderedFamily: .systemMedium))),
+            ("meals-small", .systemSmall, CGSize(width: 158, height: 158), AnyView(MacrodexMealsWidgetView(entry: entry, renderedFamily: .systemSmall))),
+            ("meals-medium", .systemMedium, CGSize(width: 338, height: 158), AnyView(MacrodexMealsWidgetView(entry: entry, renderedFamily: .systemMedium))),
+            ("week-small", .systemSmall, CGSize(width: 158, height: 158), AnyView(MacrodexWeekWidgetView(entry: entry, renderedFamily: .systemSmall))),
+            ("week-medium", .systemMedium, CGSize(width: 338, height: 158), AnyView(MacrodexWeekWidgetView(entry: entry, renderedFamily: .systemMedium))),
+            ("progress-accessory-circular", .accessoryCircular, CGSize(width: 76, height: 76), AnyView(MacrodexProgressWidgetView(entry: entry, renderedFamily: .accessoryCircular))),
+            ("progress-accessory-rectangular", .accessoryRectangular, CGSize(width: 160, height: 54), AnyView(MacrodexProgressWidgetView(entry: entry, renderedFamily: .accessoryRectangular)))
+        ]
+
+        for (schemeName, colorScheme) in [("light", ColorScheme.light), ("dark", ColorScheme.dark)] {
+            for render in renders {
+                let content = render.view
+                    .environment(\.colorScheme, colorScheme)
+                    .frame(width: render.size.width, height: render.size.height)
+
+                let renderer = ImageRenderer(content: content)
+                renderer.scale = 3
+                renderer.proposedSize = ProposedViewSize(render.size)
+
+                guard let data = renderer.uiImage?.pngData() else {
+                    print("render-failed \(schemeName)-\(render.name)")
+                    continue
+                }
+
+                let fileURL = outputURL.appendingPathComponent("\(schemeName)-\(render.name).png")
+                do {
+                    try data.write(to: fileURL, options: Data.WritingOptions.atomic)
+                    print(fileURL.path)
+                } catch {
+                    print("write-failed \(fileURL.path): \(error)")
+                }
+            }
+        }
+    }
+}
+#endif
