@@ -2111,6 +2111,7 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
     private var account: Account?
     private var authMode: AuthMode?
     private var authToken: String?
+    private var foundationModelsProviderInstalled = false
     private var agentDirectoryVersion: UInt64 = 1
     private var activeThread: ThreadKey?
     private var threads: [String: ThreadRecord] = [:]
@@ -2369,7 +2370,7 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
             AuthStatus(
                 authMethod: self.authMode,
                 authToken: includeToken ? self.authToken : nil,
-                requiresOpenaiAuth: self.account == nil
+                requiresOpenaiAuth: self.requiresExternalModelAuth
             )
         }
     }
@@ -2480,7 +2481,8 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
             lock.unlock()
             return false
         }
-        guard account != nil else {
+        let requestedModel = params.model ?? record.model
+        guard canUseModel(requestedModel) else {
             lock.unlock()
             throw MacrodexAgentAppRuntimeError.noProvider
         }
@@ -2576,6 +2578,7 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
 
         try? tryInstallCodexAuthFileProviderSync()
         tryInstallGoogleAIProviderSync()
+        tryInstallFoundationModelsProviderSync()
         self.visibleModels = availableModelInfos(includeHidden: false)
     }
 
@@ -2607,12 +2610,31 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
         }
     }
 
+    private func tryInstallFoundationModelsProviderSync() {
+#if canImport(FoundationModels)
+        guard !foundationModelsProviderInstalled else { return }
+        runtime?.registerProvider(
+            MacrodexAgentFoundationModelsProvider(),
+            for: MacrodexAgentBuiltInProviderRegistry.foundationModels.id
+        )
+        foundationModelsProviderInstalled = true
+#else
+        foundationModelsProviderInstalled = false
+#endif
+    }
+
     private func availableModelInfos(includeHidden: Bool) -> [ModelInfo] {
+        let foundationModels = foundationModelsProviderInstalled
+            ? (runtime?.availableModels(
+                providerID: MacrodexAgentBuiltInProviderRegistry.foundationModels.id,
+                includeHidden: includeHidden
+            ) ?? MacrodexAgentBuiltInModelCatalogs.foundationModels.visibleModels)
+            : []
         let openAIModels = runtime?.availableModels(
             providerID: MacrodexAgentBuiltInProviderRegistry.openAI.id,
             includeHidden: includeHidden
         ) ?? MacrodexAgentBuiltInModelCatalogs.chatGPTCodex.visibleModels
-        var models = openAIModels
+        var models = foundationModels + openAIModels
         if isGoogleAIConfigured {
             models += runtime?.availableModels(
                 providerID: MacrodexAgentBuiltInProviderRegistry.google.id,
@@ -2623,11 +2645,18 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
     }
 
     private func preferredDefaultModelID() -> String {
-        runtime?.preferredModelID(providerID: MacrodexAgentBuiltInProviderRegistry.openAI.id) ?? "gpt-5.4-mini"
+        if account == nil, foundationModelsProviderInstalled {
+            return runtime?.preferredModelID(providerID: MacrodexAgentBuiltInProviderRegistry.foundationModels.id) ?? "system"
+        }
+        return runtime?.preferredModelID(providerID: MacrodexAgentBuiltInProviderRegistry.openAI.id) ?? "gpt-5.4-mini"
     }
 
     private static func defaultReasoningEffortName(for model: String) -> String? {
-        let modelInfo = (MacrodexAgentBuiltInModelCatalogs.chatGPTCodex.models + MacrodexAgentBuiltInModelCatalogs.googleAI.models)
+        let modelInfo = (
+            MacrodexAgentBuiltInModelCatalogs.chatGPTCodex.models
+                + MacrodexAgentBuiltInModelCatalogs.googleAI.models
+                + MacrodexAgentBuiltInModelCatalogs.foundationModels.models
+        )
             .first { $0.id == model }
         guard let modelInfo,
               !modelInfo.supportedReasoningEfforts.isEmpty else {
@@ -2644,9 +2673,30 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
         return !(ProcessInfo.processInfo.environment[envKey]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
     }
 
+    private var requiresExternalModelAuth: Bool {
+        account == nil && !foundationModelsProviderInstalled
+    }
+
+    private func canUseModel(_ model: String) -> Bool {
+        switch Self.providerID(for: model) {
+        case MacrodexAgentBuiltInProviderRegistry.foundationModels.id:
+            return foundationModelsProviderInstalled
+        case MacrodexAgentBuiltInProviderRegistry.google.id:
+            return isGoogleAIConfigured
+        default:
+            return account != nil
+        }
+    }
+
     private static func providerID(for model: String) -> String {
-        if model.hasPrefix("google/") {
+        let normalized = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized.hasPrefix("google/") {
             return MacrodexAgentBuiltInProviderRegistry.google.id
+        }
+        if normalized == "system"
+            || normalized == "pcc"
+            || normalized.hasPrefix("foundationmodels/") {
+            return MacrodexAgentBuiltInProviderRegistry.foundationModels.id
         }
         return MacrodexAgentBuiltInProviderRegistry.openAI.id
     }
@@ -2857,7 +2907,7 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
             "google/gemini-2.0-flash"
         ].filter { availableModels.contains($0) }
         let instructions = """
-        You are a compact nutrition dashboard assistant. Given today's log, goals, current week summary, and candidate food suggestions, return JSON only: {"summary":"one useful sentence","suggestionIDs":["candidate-id"]}. MacrodexAgentck at most three candidate IDs. Make the summary specific: mention remaining calories plus the most relevant macro gap, pattern, or caution from today/week. Avoid generic strings like "17 calories over today" unless there is truly no other useful context. Prefer foods the user logs often when they fit the remaining calories/macros and keep them under their historically likely meal. Avoid foods already logged today, and do not fill every meal category just because candidates exist. If calories are complete or over goal, return an empty suggestionIDs array unless a very small protein-focused suggestion clearly fits. Keep the summary factual and concise.
+        You are a compact nutrition dashboard assistant. Given today's log, goals, current week summary, and candidate food suggestions, return JSON only: {"summary":"one useful sentence","suggestionIDs":["candidate-id"]}. Pick at most three candidate IDs. Make the summary specific: mention remaining calories plus the most relevant macro gap, pattern, or caution from today/week. Avoid generic strings like "17 calories over today" unless there is truly no other useful context. Prefer foods the user logs often when they fit the remaining calories/macros and keep them under their historically likely meal. Avoid foods already logged today, and do not fill every meal category just because candidates exist. If calories are complete or over goal, return an empty suggestionIDs array unless a very small protein-focused suggestion clearly fits. Keep the summary factual and concise.
         """
         let messages = [
             MacrodexAgentMessage(role: .system, content: instructions),
@@ -3001,7 +3051,8 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
         guard var record = threads[key.threadId] else {
             throw MacrodexAgentAppRuntimeError.threadNotFound(key)
         }
-        guard account != nil else {
+        let requestedModel = params.model ?? record.model
+        guard canUseModel(requestedModel) else {
             throw MacrodexAgentAppRuntimeError.noProvider
         }
 
@@ -3873,7 +3924,7 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
                 canResumeViaIpc: false
             ),
             account: account,
-            requiresOpenaiAuth: account == nil,
+            requiresOpenaiAuth: requiresExternalModelAuth,
             rateLimits: nil,
             availableModels: visibleModels,
             connectionProgress: nil,

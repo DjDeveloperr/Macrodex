@@ -51,6 +51,14 @@ public enum MacrodexAgentBuiltInProviderRegistry {
         authEnvironmentVariable: "GOOGLE_API_KEY"
     )
 
+    public static let foundationModels = MacrodexAgentProviderDescriptor(
+        id: "foundationmodels",
+        displayName: "Foundation Models",
+        defaultBaseURL: nil,
+        wireAPI: "foundationmodels",
+        authEnvironmentVariable: nil
+    )
+
     public static let openAICompatible = MacrodexAgentProviderDescriptor(
         id: "openai_compatible",
         displayName: "OpenAI Compatible",
@@ -63,6 +71,7 @@ public enum MacrodexAgentBuiltInProviderRegistry {
         openAI,
         anthropic,
         google,
+        foundationModels,
         openAICompatible
     ]
 }
@@ -651,6 +660,29 @@ public enum MacrodexAgentBuiltInModelCatalogs {
                 description: "General-purpose multimodal Google AI model.",
                 inputModalities: ["text", "image"],
                 supportsStreaming: false
+            )
+        ]
+    )
+
+    public static let foundationModels = MacrodexAgentModelCatalog(
+        providerID: MacrodexAgentBuiltInProviderRegistry.foundationModels.id,
+        models: [
+            MacrodexAgentModelInfo(
+                id: "system",
+                providerID: MacrodexAgentBuiltInProviderRegistry.foundationModels.id,
+                displayName: "System",
+                description: "Apple Foundation Models on-device model. No ChatGPT login required.",
+                supportsTools: false,
+                supportsStreaming: true,
+                isDefault: true
+            ),
+            MacrodexAgentModelInfo(
+                id: "pcc",
+                providerID: MacrodexAgentBuiltInProviderRegistry.foundationModels.id,
+                displayName: "PCC",
+                description: "Apple Foundation Models Private Cloud Compute model when available on this OS.",
+                supportsTools: false,
+                supportsStreaming: true
             )
         ]
     )

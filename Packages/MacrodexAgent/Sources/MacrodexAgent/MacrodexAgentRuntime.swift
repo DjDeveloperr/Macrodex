@@ -80,7 +80,8 @@ public final class MacrodexAgentRuntime {
     private var tools: [String: any MacrodexAgentToolRunner] = [:]
     private var modelCatalogs: [String: MacrodexAgentModelCatalog] = [
         MacrodexAgentBuiltInModelCatalogs.chatGPTCodex.providerID: MacrodexAgentBuiltInModelCatalogs.chatGPTCodex,
-        MacrodexAgentBuiltInModelCatalogs.googleAI.providerID: MacrodexAgentBuiltInModelCatalogs.googleAI
+        MacrodexAgentBuiltInModelCatalogs.googleAI.providerID: MacrodexAgentBuiltInModelCatalogs.googleAI,
+        MacrodexAgentBuiltInModelCatalogs.foundationModels.providerID: MacrodexAgentBuiltInModelCatalogs.foundationModels
     ]
     private var state = RuntimeState()
     private var currentEventHandler: MacrodexAgentRuntimeEventHandler?

@@ -1,9 +1,11 @@
 import Foundation
 import AppIntents
+import CoreSpotlight
 import PhotosUI
 import SQLite3
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 import WidgetKit
 
 private enum DashboardTone {
@@ -98,6 +100,7 @@ struct DashboardScreen: View {
             .blur(radius: dashboardContentBlurRadius)
 
             dashboardKeyboardBlurOverlay
+            dashboardModelSelectorOverlay
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
         .scrollDisabled(drawerController.progress > 0.001)
@@ -136,7 +139,7 @@ struct DashboardScreen: View {
             }
             ToolbarItem(placement: .principal) {
                 Button {
-                    guard canOpenDashboardSheet else { return }
+                    guard canOpenDashboardSheet, !isDashboardComposerOpen else { return }
                     AppHaptics.light()
                     activeSheet = .dateSwitcher
                 } label: {
@@ -155,7 +158,9 @@ struct DashboardScreen: View {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if isDashboardComposerOpen {
                     Button {
-                        showDashboardModelSelector = true
+                        withAnimation(.snappy(duration: 0.22)) {
+                            showDashboardModelSelector.toggle()
+                        }
                     } label: {
                         Image(systemName: "cpu")
                             .font(.system(size: 16, weight: .semibold))
@@ -237,16 +242,6 @@ struct DashboardScreen: View {
         .sheet(item: $selectedMeal) { selection in
             MealLogDetailSheet(store: store, meal: selection.meal)
         }
-        .sheet(isPresented: $showDashboardModelSelector) {
-            ConversationOptionsSheet(
-                models: dashboardAvailableModels,
-                selectedModel: dashboardSelectedModelBinding,
-                reasoningEffort: dashboardReasoningEffortBinding,
-                threadKey: nil
-            )
-            .presentationDetents([.medium, .large])
-            .presentationDragIndicator(.visible)
-        }
         .alert("Calorie Tracker Error", isPresented: Binding(
             get: { store.errorMessage != nil },
             set: { if !$0 { store.errorMessage = nil } }
@@ -291,6 +286,40 @@ struct DashboardScreen: View {
                 .ignoresSafeArea(.container, edges: .bottom)
                 .ignoresSafeArea(.keyboard, edges: .bottom)
                 .transition(.opacity)
+        }
+    }
+
+    @ViewBuilder
+    private var dashboardModelSelectorOverlay: some View {
+        if showDashboardModelSelector && isDashboardComposerOpen {
+            GeometryReader { proxy in
+                ZStack(alignment: .topTrailing) {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            withAnimation(.snappy(duration: 0.18)) {
+                                showDashboardModelSelector = false
+                            }
+                        }
+
+                    DashboardModelSelectorGlassPopup(
+                        models: dashboardAvailableModels,
+                        selectedModel: dashboardSelectedModelBinding,
+                        reasoningEffort: dashboardReasoningEffortBinding,
+                        onDismiss: {
+                            withAnimation(.snappy(duration: 0.18)) {
+                                showDashboardModelSelector = false
+                            }
+                        }
+                    )
+                    .frame(width: min(proxy.size.width - 24, 368))
+                    .padding(.top, 8)
+                    .padding(.trailing, 12)
+                    .transition(.scale(scale: 0.96, anchor: .topTrailing).combined(with: .opacity))
+                }
+            }
+            .zIndex(80)
         }
     }
 
@@ -595,6 +624,9 @@ struct DashboardScreen: View {
 
         let update = {
             keyboardOverlayProgress = clamped
+            if clamped <= 0.001 {
+                showDashboardModelSelector = false
+            }
         }
 
         guard let notification,
@@ -616,6 +648,7 @@ struct DashboardScreen: View {
         activeSheet = nil
         selectedLogItem = nil
         selectedMeal = nil
+        showDashboardModelSelector = false
     }
 
     private func prepareDashboardMetricsForOpen() {
@@ -1153,6 +1186,79 @@ struct DashboardScreen: View {
     }
 }
 
+private struct DashboardModelSelectorGlassPopup: View {
+    let models: [ModelInfo]
+    @Binding var selectedModel: String
+    @Binding var reasoningEffort: String
+    let onDismiss: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Model")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(DashboardTone.textPrimary)
+                    Text(currentModelName)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(DashboardTone.textSecondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(DashboardTone.textPrimary)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close model settings")
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 12)
+            .padding(.bottom, 6)
+
+            Divider()
+                .background(DashboardTone.divider.opacity(0.55))
+                .padding(.horizontal, 12)
+
+            InlineModelSelectorView(
+                models: models,
+                selectedModel: $selectedModel,
+                reasoningEffort: $reasoningEffort,
+                threadKey: nil,
+                onDismiss: onDismiss
+            )
+        }
+        .background(popupBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.18), radius: 26, y: 14)
+    }
+
+    private var currentModelName: String {
+        if let model = models.first(where: { $0.id == selectedModel }) {
+            return model.displayName
+        }
+        return models.first(where: \.isDefault)?.displayName ?? models.first?.displayName ?? "System"
+    }
+
+    @ViewBuilder
+    private var popupBackground: some View {
+        if #available(iOS 26.0, *) {
+            Color.clear
+                .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22))
+        } else {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(.ultraThinMaterial)
+        }
+    }
+}
+
 struct CalorieLibraryScreen: View {
     @Environment(DrawerController.self) private var drawerController
     @StateObject private var store = CalorieTrackerStore.shared
@@ -1216,6 +1322,7 @@ struct CalorieLibraryScreen: View {
         }
         .task {
             await store.refresh()
+            await handlePendingSpotlightFoodRoute()
         }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
@@ -1235,6 +1342,29 @@ struct CalorieLibraryScreen: View {
                 CanonicalFoodEditorSheet(store: store, item: item)
             case .search:
                 LibrarySearchScreen(store: store)
+            }
+        }
+    }
+
+    private func handlePendingSpotlightFoodRoute() async {
+        guard let defaults = UserDefaults(suiteName: MacrodexPalette.appGroupSuite),
+              let entityID = defaults.string(forKey: MacrodexFoodSpotlight.pendingFoodIDKey)
+        else {
+            return
+        }
+        defaults.removeObject(forKey: MacrodexFoodSpotlight.pendingFoodIDKey)
+
+        let parsed = MacrodexFoodSpotlight.parseEntityID(entityID)
+        switch parsed.source {
+        case "library":
+            if let item = store.libraryItems.first(where: { $0.id == parsed.rawID }) {
+                activeSheet = .libraryItem(item)
+            }
+        default:
+            if let item = store.recentFoodMemories.first(where: { $0.id == parsed.rawID }) {
+                activeSheet = .recentFood(item)
+            } else if let item = await store.loadCanonicalFood(id: parsed.rawID) {
+                activeSheet = .recentFood(item)
             }
         }
     }
@@ -6270,6 +6400,13 @@ struct CalorieDaySummary: Equatable {
     var logCount = 0
 }
 
+struct CalorieLoggedDaySummary: Equatable {
+    var dateKey: String
+    var totals = CalorieTotals()
+    var goal = CalorieGoal()
+    var logs: [CalorieLogItem] = []
+}
+
 private struct CalorieLogItemCopy {
     let libraryItemId: String?
     let servingCount: Double?
@@ -6355,6 +6492,10 @@ final class CalorieTrackerStore: ObservableObject {
             errorMessage = nil
             queueHealthKitSyncIfNeeded(for: todayKey)
             publishProgressWidgetSnapshotIfNeeded()
+            MacrodexFoodSpotlightIndexer.scheduleIndex(
+                libraryItems: libraryItems,
+                recentFoodMemories: recentFoodMemories
+            )
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -7330,6 +7471,17 @@ final class CalorieTrackerStore: ObservableObject {
         }
     }
 
+    func loadCanonicalFood(id: String) async -> CanonicalFoodItem? {
+        do {
+            try openIfNeeded()
+            try migrate()
+            return try fetchCanonicalFood(id: id)
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
     private func softDelete(table: String, id: String) async {
         do {
             try openIfNeeded()
@@ -7340,9 +7492,37 @@ final class CalorieTrackerStore: ObservableObject {
         }
     }
 
+    func loggedDaySummary(for date: Date) async -> CalorieLoggedDaySummary {
+        do {
+            try openIfNeeded()
+            try migrate()
+            let dateKey = Self.dateFormatter.string(from: calendar.startOfDay(for: date))
+            return CalorieLoggedDaySummary(
+                dateKey: dateKey,
+                totals: try loadDayTotals(dateKey: dateKey),
+                goal: try loadGoal(forDateKey: dateKey),
+                logs: try loadLogItems(dateKey: dateKey)
+            )
+        } catch {
+            errorMessage = error.localizedDescription
+            let dateKey = Self.dateFormatter.string(from: calendar.startOfDay(for: date))
+            return CalorieLoggedDaySummary(dateKey: dateKey, totals: .init(), goal: goal, logs: [])
+        }
+    }
+
     private func loadDashboard() throws {
-        let totals = try query(
+        let totals = try loadDayTotals(dateKey: todayKey)
+        let logs = try loadLogItems(dateKey: todayKey)
+
+        todayTotals = totals
+        todayLogs = logs
+        goal = try loadGoal()
+    }
+
+    private func loadDayTotals(dateKey: String) throws -> CalorieTotals {
+        try query(
             """
+            /* macrodex: Loading day calories */
             SELECT
                 COALESCE(SUM(calories_kcal), 0),
                 COALESCE(SUM(COALESCE(protein_g, 0)), 0),
@@ -7351,7 +7531,7 @@ final class CalorieTrackerStore: ObservableObject {
             FROM food_log_items
             WHERE log_date = ? AND deleted_at_ms IS NULL
             """,
-            [todayKey]
+            [dateKey]
         ) { statement in
             CalorieTotals(
                 calories: sqliteDouble(statement, 0),
@@ -7360,9 +7540,12 @@ final class CalorieTrackerStore: ObservableObject {
                 fat: sqliteDouble(statement, 3)
             )
         }.first ?? CalorieTotals()
+    }
 
-        let logs = try query(
+    private func loadLogItems(dateKey: String) throws -> [CalorieLogItem] {
+        try query(
             """
+            /* macrodex: Loading day foods */
             SELECT fli.id, fli.canonical_food_id, fli.library_item_id, fli.name, fle.meal_type,
                    fli.serving_count, fli.unit, fli.weight_g,
                    fli.calories_kcal, COALESCE(fli.protein_g, 0),
@@ -7379,7 +7562,7 @@ final class CalorieTrackerStore: ObservableObject {
             WHERE fli.log_date = ? AND fli.deleted_at_ms IS NULL
             ORDER BY fli.logged_at_ms ASC
             """,
-            [todayKey]
+            [dateKey]
         ) { statement in
             CalorieLogItem(
                 id: sqliteText(statement, 0),
@@ -7400,10 +7583,6 @@ final class CalorieTrackerStore: ObservableObject {
                 isFavorite: sqliteInt(statement, 15) == 1
             )
         }
-
-        todayTotals = totals
-        todayLogs = logs
-        goal = try loadGoal()
     }
 
     private func loadLibrary() throws {
@@ -9603,13 +9782,66 @@ enum MacrodexIntentSection: String, AppEnum {
     ]
 }
 
-struct MacrodexFoodEntity: AppEntity {
+enum MacrodexFoodSpotlight {
+    static let logTodayActionIdentifier = "com.dj.macrodex.food.logToday"
+    static let pendingFoodIDKey = "spotlight.pendingFoodID"
+
+    static func canonicalEntityID(_ id: String) -> String {
+        "canonical:\(id)"
+    }
+
+    static func libraryEntityID(_ id: String) -> String {
+        "library:\(id)"
+    }
+
+    static func parseEntityID(_ id: String) -> (source: String, rawID: String) {
+        if id.hasPrefix("library:") {
+            return ("library", String(id.dropFirst("library:".count)))
+        }
+        if id.hasPrefix("canonical:") {
+            return ("canonical", String(id.dropFirst("canonical:".count)))
+        }
+        return ("canonical", id)
+    }
+
+    static func requestOpenFood(_ entityID: String) {
+        guard let defaults = UserDefaults(suiteName: MacrodexPalette.appGroupSuite) else { return }
+        defaults.set(MacrodexIntentSection.library.rawValue, forKey: "appIntent.pendingSection")
+        defaults.set(entityID, forKey: pendingFoodIDKey)
+    }
+
+    @MainActor
+    static func logToday(entityID: String) async {
+        let parsed = parseEntityID(entityID)
+        switch parsed.source {
+        case "library":
+            await CalorieTrackerStore.shared.logLibraryItem(parsed.rawID, mealType: .currentDefault)
+        default:
+            await CalorieTrackerStore.shared.logCanonicalFood(parsed.rawID, mealType: .currentDefault)
+        }
+    }
+}
+
+struct MacrodexFoodEntity: AppEntity, IndexedEntity, URLRepresentableEntity {
     static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "Food")
     static var defaultQuery = MacrodexFoodEntityQuery()
+    static var urlRepresentation: URLRepresentation {
+        "macrodex://food/\(.id)"
+    }
 
     let id: String
-    let name: String
-    let detail: String
+
+    @Property(title: "Name")
+    var name: String
+
+    @Property(title: "Detail")
+    var detail: String
+
+    init(id: String, name: String, detail: String) {
+        self.id = id
+        self.name = name
+        self.detail = detail
+    }
 
     var displayRepresentation: DisplayRepresentation {
         DisplayRepresentation(
@@ -9617,6 +9849,19 @@ struct MacrodexFoodEntity: AppEntity {
             subtitle: "\(detail)",
             image: .init(systemName: "fork.knife.circle.fill")
         )
+    }
+
+    var attributeSet: CSSearchableItemAttributeSet {
+        let attributeSet = CSSearchableItemAttributeSet(contentType: .data)
+        attributeSet.displayName = name
+        attributeSet.title = name
+        attributeSet.contentDescription = detail
+        attributeSet.keywords = ["Macrodex", "food", "calories", name]
+        attributeSet.contentURL = URL(string: "macrodex://food/\(id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id)")
+        attributeSet.rankingHint = NSNumber(value: detail.localizedCaseInsensitiveContains("favorite") ? 100 : 70)
+        attributeSet.userCurated = NSNumber(value: detail.localizedCaseInsensitiveContains("favorite"))
+        attributeSet.actionIdentifiers = [MacrodexFoodSpotlight.logTodayActionIdentifier]
+        return attributeSet
     }
 }
 
@@ -9633,6 +9878,74 @@ struct MacrodexFoodEntityQuery: EntityStringQuery {
 
     func suggestedEntities() async throws -> [MacrodexFoodEntity] {
         await MacrodexIntentBridge.foodEntities(query: "")
+    }
+}
+
+struct MacrodexLoggedFoodEntity: AppEntity {
+    static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "Logged Food")
+    static var defaultQuery = MacrodexLoggedFoodEntityQuery()
+
+    let id: String
+
+    @Property(title: "Name")
+    var name: String
+
+    @Property(title: "Meal")
+    var meal: String
+
+    @Property(title: "Calories")
+    var calories: Double
+
+    @Property(title: "Protein")
+    var protein: Double
+
+    @Property(title: "Carbs")
+    var carbs: Double
+
+    @Property(title: "Fat")
+    var fat: Double
+
+    @Property(title: "Serving")
+    var serving: String
+
+    init(
+        id: String,
+        name: String,
+        meal: String,
+        calories: Double,
+        protein: Double,
+        carbs: Double,
+        fat: Double,
+        serving: String
+    ) {
+        self.id = id
+        self.name = name
+        self.meal = meal
+        self.calories = calories
+        self.protein = protein
+        self.carbs = carbs
+        self.fat = fat
+        self.serving = serving
+    }
+
+    var displayRepresentation: DisplayRepresentation {
+        DisplayRepresentation(
+            title: "\(name)",
+            subtitle: "\(meal) · \(Int(calories.rounded())) kcal · \(serving)",
+            image: .init(systemName: "fork.knife.circle")
+        )
+    }
+}
+
+struct MacrodexLoggedFoodEntityQuery: EntityQuery {
+    func entities(for identifiers: [MacrodexLoggedFoodEntity.ID]) async throws -> [MacrodexLoggedFoodEntity] {
+        let entities = await MacrodexIntentBridge.todayFoodEntities().items
+        let ids = Set(identifiers)
+        return entities.filter { ids.contains($0.id) }
+    }
+
+    func suggestedEntities() async throws -> [MacrodexLoggedFoodEntity] {
+        await MacrodexIntentBridge.todayFoodEntities().items
     }
 }
 
@@ -9743,6 +10056,17 @@ struct MacrodexProgressIntent: AppIntent {
     }
 }
 
+struct MacrodexTodayFoodIntent: AppIntent {
+    static var title: LocalizedStringResource = "Get Today's Food"
+    static var description = IntentDescription("Return the foods logged in Macrodex today with meal, serving, calories, and macros.")
+    static var openAppWhenRun = false
+
+    func perform() async throws -> some IntentResult & ReturnsValue<[MacrodexLoggedFoodEntity]> & ProvidesDialog {
+        let response = await MacrodexIntentBridge.todayFoodEntities()
+        return .result(value: response.items, dialog: IntentDialog(stringLiteral: response.dialog))
+    }
+}
+
 struct MacrodexSetGoalsIntent: AppIntent {
     static var title: LocalizedStringResource = "Set Macro Goals"
     static var description = IntentDescription("Set calorie, protein, carb, and fat goals.")
@@ -9841,6 +10165,16 @@ struct MacrodexAppShortcuts: AppShortcutsProvider {
             systemImageName: "chart.pie.fill"
         )
         AppShortcut(
+            intent: MacrodexTodayFoodIntent(),
+            phrases: [
+                "What did I eat today in \(.applicationName)",
+                "What have I eaten today in \(.applicationName)",
+                "Show today's food in \(.applicationName)"
+            ],
+            shortTitle: "Today's Food",
+            systemImageName: "list.bullet.clipboard.fill"
+        )
+        AppShortcut(
             intent: MacrodexSetGoalsIntent(),
             phrases: [
                 "Set goals in \(.applicationName)"
@@ -9869,20 +10203,143 @@ struct MacrodexAppShortcuts: AppShortcutsProvider {
 }
 
 @MainActor
+enum MacrodexFoodSpotlightIndexer {
+    static func scheduleIndex(
+        libraryItems: [CalorieLibraryItem],
+        recentFoodMemories: [CanonicalFoodItem]
+    ) {
+        let entities = foodEntities(libraryItems: libraryItems, recentFoodMemories: recentFoodMemories)
+        guard !entities.isEmpty else { return }
+
+        Task {
+            guard CSSearchableIndex.isIndexingAvailable() else { return }
+            do {
+                try await CSSearchableIndex.default().indexAppEntities(entities, priority: 60)
+            } catch {
+                LLog.warn("spotlight", "Food Spotlight indexing failed", fields: ["error": error.localizedDescription])
+            }
+        }
+    }
+
+    static func foodEntities(
+        libraryItems: [CalorieLibraryItem],
+        recentFoodMemories: [CanonicalFoodItem]
+    ) -> [MacrodexFoodEntity] {
+        var entities: [MacrodexFoodEntity] = []
+        var seenIDs = Set<String>()
+        var seenNames = Set<String>()
+
+        func append(_ entity: MacrodexFoodEntity) {
+            guard seenIDs.insert(entity.id).inserted else { return }
+            let nameKey = normalizedNameKey(entity.name)
+            guard seenNames.insert(nameKey).inserted else { return }
+            entities.append(entity)
+        }
+
+        for item in libraryItems
+            .filter(\.isFavorite)
+            .sorted(by: { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending })
+            .prefix(16) {
+            append(MacrodexFoodEntity(
+                id: MacrodexFoodSpotlight.libraryEntityID(item.id),
+                name: item.name,
+                detail: "Favorite · \(item.detail)"
+            ))
+        }
+
+        for item in recentFoodMemories
+            .sorted(by: { lhs, rhs in
+                if lhs.totalUseCount != rhs.totalUseCount { return lhs.totalUseCount > rhs.totalUseCount }
+                return (lhs.lastUsedAtMs ?? 0) > (rhs.lastUsedAtMs ?? 0)
+            })
+            .prefix(16) {
+            append(MacrodexFoodEntity(
+                id: MacrodexFoodSpotlight.canonicalEntityID(item.id),
+                name: item.title,
+                detail: "Most logged \(max(item.totalUseCount, 1))x · \(item.detail)"
+            ))
+        }
+
+        for item in FoodSearchSupport.rankedRecentFoods(
+            recentFoodMemories,
+            preferredMeal: .currentDefault,
+            limit: 16
+        ) {
+            append(MacrodexFoodEntity(
+                id: MacrodexFoodSpotlight.canonicalEntityID(item.id),
+                name: item.title,
+                detail: "Recent · \(item.detail)"
+            ))
+        }
+
+        return Array(entities.prefix(32))
+    }
+
+    private static func normalizedNameKey(_ value: String) -> String {
+        value
+            .lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+}
+
+@MainActor
 private enum MacrodexIntentBridge {
+    struct TodayFoodResponse {
+        let items: [MacrodexLoggedFoodEntity]
+        let dialog: String
+    }
+
     static func foodEntities(query: String) async -> [MacrodexFoodEntity] {
         let store = CalorieTrackerStore.shared
         await store.refresh()
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let items: [CanonicalFoodItem]
         if trimmed.isEmpty {
-            items = FoodSearchSupport.rankedRecentFoods(store.recentFoodMemories, preferredMeal: .currentDefault, limit: 24)
-        } else {
-            items = await store.loadCanonicalFoods(query: trimmed, limit: 24, offset: 0)
+            return MacrodexFoodSpotlightIndexer.foodEntities(
+                libraryItems: store.libraryItems,
+                recentFoodMemories: store.recentFoodMemories
+            )
         }
+
+        let items: [CanonicalFoodItem]
+        items = await store.loadCanonicalFoods(query: trimmed, limit: 24, offset: 0)
         return items.map {
-            MacrodexFoodEntity(id: $0.id, name: $0.title, detail: $0.detail)
+            MacrodexFoodEntity(
+                id: MacrodexFoodSpotlight.canonicalEntityID($0.id),
+                name: $0.title,
+                detail: $0.detail
+            )
         }
+    }
+
+    static func todayFoodEntities() async -> TodayFoodResponse {
+        let summary = await CalorieTrackerStore.shared.loggedDaySummary(for: Date())
+        let items = summary.logs.map { item in
+            MacrodexLoggedFoodEntity(
+                id: item.id,
+                name: item.name,
+                meal: item.mealType.title,
+                calories: item.calories,
+                protein: item.protein,
+                carbs: item.carbs,
+                fat: item.fat,
+                serving: item.servingDescription
+            )
+        }
+
+        let calories = Int(summary.totals.calories.rounded())
+        let goal = Int(summary.goal.calories.rounded())
+        let dialog: String
+        if items.isEmpty {
+            dialog = "No foods are logged in Macrodex today."
+        } else {
+            let names = items.prefix(5).map(\.name).joined(separator: ", ")
+            let extraCount = max(items.count - 5, 0)
+            let suffix = extraCount > 0 ? ", plus \(extraCount) more" : ""
+            dialog = "Today you logged \(items.count) item\(items.count == 1 ? "" : "s"): \(names)\(suffix). Total is \(calories) of \(goal) calories."
+        }
+        return TodayFoodResponse(items: items, dialog: dialog)
     }
 
     static func logFood(
@@ -9912,7 +10369,13 @@ private enum MacrodexIntentBridge {
     }
 
     static func logFrequentFood(id: String, meal: MacrodexIntentMeal) async {
-        await CalorieTrackerStore.shared.logCanonicalFood(id, mealType: meal.calorieMealType)
+        let parsed = MacrodexFoodSpotlight.parseEntityID(id)
+        switch parsed.source {
+        case "library":
+            await CalorieTrackerStore.shared.logLibraryItem(parsed.rawID, mealType: meal.calorieMealType)
+        default:
+            await CalorieTrackerStore.shared.logCanonicalFood(parsed.rawID, mealType: meal.calorieMealType)
+        }
     }
 
     static func progressSummary() async -> String {

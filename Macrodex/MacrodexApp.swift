@@ -1,4 +1,5 @@
 import Observation
+import CoreSpotlight
 import PhotosUI
 import SwiftUI
 import UIKit
@@ -413,7 +414,8 @@ private struct HomeNavigationView: View {
     }
 
     private var hasRequiredChatGPTLogin: Bool {
-        localServer?.account != nil
+        guard let localServer else { return false }
+        return !localServer.requiresOpenaiAuth
     }
 
     private var localServerAuthValidationID: String {
@@ -543,6 +545,12 @@ private struct HomeNavigationView: View {
         }
         .onAppear {
             handlePendingAppIntentRoute()
+        }
+        .onOpenURL { url in
+            handleMacrodexURL(url)
+        }
+        .onContinueUserActivity(CSSearchableItemActionType) { activity in
+            handleSpotlightFoodActivity(activity)
         }
     }
 
@@ -1219,6 +1227,37 @@ private struct HomeNavigationView: View {
         case .dashboard, .foodSearch, .goals:
             showDashboard()
         }
+    }
+
+    private func handleMacrodexURL(_ url: URL) {
+        guard url.scheme?.lowercased() == "macrodex",
+              url.host?.lowercased() == "food",
+              let entityID = url.pathComponents.dropFirst().first?.removingPercentEncoding,
+              !entityID.isEmpty
+        else {
+            return
+        }
+        openSpotlightFood(entityID: entityID)
+    }
+
+    private func handleSpotlightFoodActivity(_ activity: NSUserActivity) {
+        guard let entityID = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String else {
+            return
+        }
+        let actionIdentifier = activity.userInfo?[CSActionIdentifier] as? String
+        if actionIdentifier == MacrodexFoodSpotlight.logTodayActionIdentifier {
+            Task { @MainActor in
+                await MacrodexFoodSpotlight.logToday(entityID: entityID)
+                showDashboard()
+            }
+            return
+        }
+        openSpotlightFood(entityID: entityID)
+    }
+
+    private func openSpotlightFood(entityID: String) {
+        MacrodexFoodSpotlight.requestOpenFood(entityID)
+        handlePendingAppIntentRoute()
     }
 }
 

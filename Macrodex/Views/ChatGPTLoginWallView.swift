@@ -47,7 +47,7 @@ struct ChatGPTLoginWallView: View {
                         .font(.system(.largeTitle, design: .default, weight: .semibold))
                         .foregroundStyle(.primary)
 
-                    Text("Sign in with ChatGPT or add a Google AI key to use Macrodex on your iPhone")
+                    Text("Apple Foundation Models are unavailable on this device. Sign in with ChatGPT or add a Google AI key to use cloud models.")
                         .font(.body)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)

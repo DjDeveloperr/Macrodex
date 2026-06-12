@@ -1,7 +1,11 @@
 import SwiftUI
 import WidgetKit
 #if MACRODEX_WIDGET_RENDERER
+#if canImport(UIKit)
 import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 #endif
 
 private enum MacrodexWidgetStore {
@@ -737,34 +741,47 @@ private func widgetHeader(title: String, icon: String, color: Color, palette: Wi
 private struct WidgetPalette {
     let colorScheme: ColorScheme
 
-    var accent: Color { Color(red: 0.20, green: 0.60, blue: 1.00) }
-    var protein: Color { Color(red: 0.17, green: 0.72, blue: 0.52) }
-    var carbs: Color { Color(red: 0.94, green: 0.58, blue: 0.18) }
-    var fat: Color { Color(red: 0.74, green: 0.47, blue: 0.95) }
-    var warning: Color { Color(red: 0.98, green: 0.47, blue: 0.23) }
-    var backgroundTop: Color { Color(uiColor: colorScheme == .dark ? .secondarySystemBackground : .systemBackground) }
-    var backgroundBottom: Color { Color(uiColor: colorScheme == .dark ? .systemBackground : .secondarySystemBackground) }
-    var surfaceGlow: Color { accent.opacity(colorScheme == .dark ? 0.18 : 0.09) }
-    var textPrimary: Color { Color(uiColor: .label) }
-    var textSecondary: Color { Color(uiColor: .secondaryLabel) }
-    var track: Color { Color.primary.opacity(colorScheme == .dark ? 0.16 : 0.09) }
+    var accent: Color { Color(red: 0.13, green: 0.48, blue: 0.82) }
+    var protein: Color { Color(red: 0.13, green: 0.58, blue: 0.42) }
+    var carbs: Color { Color(red: 0.77, green: 0.45, blue: 0.12) }
+    var fat: Color { Color(red: 0.48, green: 0.40, blue: 0.82) }
+    var warning: Color { Color(red: 0.80, green: 0.32, blue: 0.18) }
+    var backgroundTop: Color {
+        colorScheme == .dark
+            ? Color(red: 0.075, green: 0.078, blue: 0.086)
+            : Color(red: 0.982, green: 0.984, blue: 0.990)
+    }
+    var backgroundBottom: Color {
+        colorScheme == .dark
+            ? Color(red: 0.105, green: 0.110, blue: 0.122)
+            : Color(red: 0.940, green: 0.952, blue: 0.968)
+    }
+    var textPrimary: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.92)
+            : Color(red: 0.075, green: 0.082, blue: 0.098)
+    }
+    var textSecondary: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.58)
+            : Color(red: 0.39, green: 0.43, blue: 0.49)
+    }
+    var track: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.13)
+            : Color.black.opacity(0.08)
+    }
 }
 
 private struct WidgetSurfaceBackground: View {
     let palette: WidgetPalette
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
+        ZStack {
             LinearGradient(
                 colors: [palette.backgroundTop, palette.backgroundBottom],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
-            )
-            RadialGradient(
-                colors: [palette.surfaceGlow, .clear],
-                center: .topLeading,
-                startRadius: 0,
-                endRadius: 180
             )
         }
     }
@@ -789,6 +806,7 @@ private extension View {
     }
 }
 
+#if !MACRODEX_WIDGET_RENDERER
 struct MacrodexProgressWidget: Widget {
     let kind = "MacrodexProgressWidget"
 
@@ -845,7 +863,6 @@ struct MacrodexWeekWidget: Widget {
     }
 }
 
-#if !MACRODEX_WIDGET_RENDERER
 @main
 struct MacrodexWidgets: WidgetBundle {
     var body: some Widget {
@@ -867,7 +884,7 @@ enum MacrodexWidgetRenderCLI {
         try? FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
 
         let entry = MacrodexProgressEntry(date: Date(), snapshot: .placeholder)
-        let renders: [(name: String, family: WidgetFamily, size: CGSize, view: AnyView)] = [
+        var renders: [(name: String, family: WidgetFamily, size: CGSize, view: AnyView)] = [
             ("progress-small", .systemSmall, CGSize(width: 158, height: 158), AnyView(MacrodexProgressWidgetView(entry: entry, renderedFamily: .systemSmall))),
             ("progress-medium", .systemMedium, CGSize(width: 338, height: 158), AnyView(MacrodexProgressWidgetView(entry: entry, renderedFamily: .systemMedium))),
             ("progress-large", .systemLarge, CGSize(width: 338, height: 354), AnyView(MacrodexProgressWidgetView(entry: entry, renderedFamily: .systemLarge))),
@@ -876,10 +893,14 @@ enum MacrodexWidgetRenderCLI {
             ("meals-small", .systemSmall, CGSize(width: 158, height: 158), AnyView(MacrodexMealsWidgetView(entry: entry, renderedFamily: .systemSmall))),
             ("meals-medium", .systemMedium, CGSize(width: 338, height: 158), AnyView(MacrodexMealsWidgetView(entry: entry, renderedFamily: .systemMedium))),
             ("week-small", .systemSmall, CGSize(width: 158, height: 158), AnyView(MacrodexWeekWidgetView(entry: entry, renderedFamily: .systemSmall))),
-            ("week-medium", .systemMedium, CGSize(width: 338, height: 158), AnyView(MacrodexWeekWidgetView(entry: entry, renderedFamily: .systemMedium))),
+            ("week-medium", .systemMedium, CGSize(width: 338, height: 158), AnyView(MacrodexWeekWidgetView(entry: entry, renderedFamily: .systemMedium)))
+        ]
+#if os(iOS)
+        renders += [
             ("progress-accessory-circular", .accessoryCircular, CGSize(width: 76, height: 76), AnyView(MacrodexProgressWidgetView(entry: entry, renderedFamily: .accessoryCircular))),
             ("progress-accessory-rectangular", .accessoryRectangular, CGSize(width: 160, height: 54), AnyView(MacrodexProgressWidgetView(entry: entry, renderedFamily: .accessoryRectangular)))
         ]
+#endif
 
         for (schemeName, colorScheme) in [("light", ColorScheme.light), ("dark", ColorScheme.dark)] {
             for render in renders {
@@ -891,7 +912,7 @@ enum MacrodexWidgetRenderCLI {
                 renderer.scale = 3
                 renderer.proposedSize = ProposedViewSize(render.size)
 
-                guard let data = renderer.uiImage?.pngData() else {
+                guard let data = renderer.macrodexPNGData() else {
                     print("render-failed \(schemeName)-\(render.name)")
                     continue
                 }
@@ -905,6 +926,24 @@ enum MacrodexWidgetRenderCLI {
                 }
             }
         }
+    }
+}
+
+private extension ImageRenderer {
+    @MainActor
+    func macrodexPNGData() -> Data? {
+#if canImport(UIKit)
+        uiImage?.pngData()
+#elseif canImport(AppKit)
+        guard let tiff = nsImage?.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff)
+        else {
+            return nil
+        }
+        return bitmap.representation(using: .png, properties: [:])
+#else
+        nil
+#endif
     }
 }
 #endif
