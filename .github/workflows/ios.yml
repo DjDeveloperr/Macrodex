@@ -201,6 +201,13 @@ jobs:
           echo "SIGNING_KEYCHAIN_PATH=$keychain_path" >> "$GITHUB_ENV"
           security find-identity -v -p codesigning "$keychain_path"
 
+      - name: Set TestFlight build number
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          build_number="$(date -u +'%Y%m%d%H%M')"
+          echo "TF_BUILD_NUMBER=$build_number" >> "$GITHUB_ENV"
+          echo "Using TestFlight build number $build_number"
+
       - name: Archive release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
@@ -222,7 +229,7 @@ jobs:
             -authenticationKeyID "$ASC_KEY_ID" \
             -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
-            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
+            CURRENT_PROJECT_VERSION="$TF_BUILD_NUMBER" \
             CODE_SIGN_STYLE=Automatic \
             CODE_SIGNING_ALLOWED=NO \
             IOS_CODE_SIGN_IDENTITY="" \
@@ -284,7 +291,7 @@ jobs:
             publish testflight
             --app "$ASC_APP_ID"
             --ipa "$ipa_path"
-            --build-number "$GITHUB_RUN_NUMBER"
+            --build-number "$TF_BUILD_NUMBER"
             --wait
             --timeout 45m
             --submit
