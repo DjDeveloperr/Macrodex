@@ -10,7 +10,10 @@ enum MacrodexAgentFoundationModelsProviderError: Error, LocalizedError {
     case unavailableModel(String)
     case unsupportedImages
     case noAssistantOutput
-    case pccUnavailable
+    case pccRequiresNewSDK
+    case pccRequiresNewOS
+    case pccUnavailable(String)
+    case pccQuotaLimitReached(String)
 
     var errorDescription: String? {
         switch self {
@@ -22,8 +25,14 @@ enum MacrodexAgentFoundationModelsProviderError: Error, LocalizedError {
             return "Foundation Models in Macrodex currently support text input only."
         case .noAssistantOutput:
             return "Foundation Models returned no assistant output."
-        case .pccUnavailable:
-            return "Foundation Models PCC is not exposed by the current public SDK. Select System or update the SDK when Apple exposes the PCC accessor."
+        case .pccRequiresNewSDK:
+            return "Foundation Models PCC requires building Macrodex with the iOS 27 SDK. Select System on this build."
+        case .pccRequiresNewOS:
+            return "Foundation Models PCC requires iOS 27. Select System on this device."
+        case .pccUnavailable(let reason):
+            return "Foundation Models PCC is unavailable: \(reason)"
+        case .pccQuotaLimitReached(let reason):
+            return "Foundation Models PCC quota limit reached: \(reason)"
         }
     }
 }
@@ -89,11 +98,31 @@ final class MacrodexAgentFoundationModelsProvider: MacrodexAgentStreamingProvide
             throw MacrodexAgentFoundationModelsProviderError.unsupportedImages
         }
 
-        let model = try foundationModel(for: request.model)
+        if Self.isPCCModel(request.model) {
+#if compiler(>=6.4)
+            guard #available(iOS 27.0, *) else {
+                throw MacrodexAgentFoundationModelsProviderError.pccRequiresNewOS
+            }
+            return try await completePCCAsync(request, eventHandler: eventHandler)
+#else
+            throw MacrodexAgentFoundationModelsProviderError.pccRequiresNewSDK
+#endif
+        }
+
+        return try await completeSystemAsync(request, eventHandler: eventHandler)
+    }
+
+    @available(iOS 26.0, *)
+    private func completeSystemAsync(
+        _ request: MacrodexAgentProviderRequest,
+        eventHandler: StreamHandlerBox
+    ) async throws -> MacrodexAgentProviderResponse {
+        let model = foundationModel(for: request.model)
         try validate(model: model)
 
         let instructions = Self.instructions(from: request)
         let prompt = Self.prompt(from: request.messages)
+        let options = GenerationOptions(temperature: 0.2, maximumResponseTokens: 900)
         let session = LanguageModelSession(
             model: model,
             instructions: instructions
@@ -101,8 +130,7 @@ final class MacrodexAgentFoundationModelsProvider: MacrodexAgentStreamingProvide
 
         if eventHandler.handler != nil {
             return try await streamResponse(
-                session: session,
-                prompt: prompt,
+                stream: session.streamResponse(to: prompt, options: options),
                 request: request,
                 eventHandler: eventHandler
             )
@@ -110,7 +138,7 @@ final class MacrodexAgentFoundationModelsProvider: MacrodexAgentStreamingProvide
 
         let response = try await session.respond(
             to: prompt,
-            options: GenerationOptions(temperature: 0.2, maximumResponseTokens: 900)
+            options: options
         )
         let content = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !content.isEmpty else {
@@ -121,19 +149,70 @@ final class MacrodexAgentFoundationModelsProvider: MacrodexAgentStreamingProvide
         )
     }
 
+#if compiler(>=6.4)
+    @available(iOS 27.0, *)
+    private func completePCCAsync(
+        _ request: MacrodexAgentProviderRequest,
+        eventHandler: StreamHandlerBox
+    ) async throws -> MacrodexAgentProviderResponse {
+        let model = PrivateCloudComputeLanguageModel()
+        try validatePCC(model: model)
+        try validatePCCQuota(model: model)
+
+        let instructions = Self.instructions(from: request)
+        let prompt = Self.prompt(from: request.messages)
+        let options = GenerationOptions(temperature: 0.2, maximumResponseTokens: 900)
+        let contextOptions = ContextOptions(reasoningLevel: Self.pccReasoningLevel(from: request))
+        let session = LanguageModelSession(
+            model: model,
+            instructions: instructions
+        )
+
+        do {
+            if eventHandler.handler != nil {
+                return try await streamResponse(
+                    stream: session.streamResponse(
+                        to: prompt,
+                        options: options,
+                        contextOptions: contextOptions
+                    ),
+                    request: request,
+                    eventHandler: eventHandler
+                )
+            }
+
+            let response = try await session.respond(
+                to: prompt,
+                options: options,
+                contextOptions: contextOptions
+            )
+            let content = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !content.isEmpty else {
+                throw MacrodexAgentFoundationModelsProviderError.noAssistantOutput
+            }
+            return MacrodexAgentProviderResponse(
+                message: MacrodexAgentMessage(role: .assistant, content: content),
+                usage: MacrodexAgentUsage(
+                    inputTokens: response.usage.input.totalTokenCount,
+                    cachedInputTokens: response.usage.input.cachedTokenCount,
+                    outputTokens: response.usage.output.totalTokenCount,
+                    totalTokens: response.usage.totalTokenCount
+                )
+            )
+        } catch let error as PrivateCloudComputeLanguageModel.Error {
+            throw Self.pccProviderError(from: error)
+        }
+    }
+#endif
+
     @available(iOS 26.0, *)
     private func streamResponse(
-        session: LanguageModelSession,
-        prompt: String,
+        stream: LanguageModelSession.ResponseStream<String>,
         request: MacrodexAgentProviderRequest,
         eventHandler: StreamHandlerBox
     ) async throws -> MacrodexAgentProviderResponse {
         var previous = ""
         var deltas: [String] = []
-        let stream = session.streamResponse(
-            to: prompt,
-            options: GenerationOptions(temperature: 0.2, maximumResponseTokens: 900)
-        )
 
         for try await snapshot in stream {
             let content = snapshot.content
@@ -165,12 +244,10 @@ final class MacrodexAgentFoundationModelsProvider: MacrodexAgentStreamingProvide
     }
 
     @available(iOS 26.0, *)
-    private func foundationModel(for modelID: String) throws -> SystemLanguageModel {
+    private func foundationModel(for modelID: String) -> SystemLanguageModel {
         switch modelID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "", "system", "foundationmodels/system":
             return SystemLanguageModel(useCase: .general)
-        case "pcc", "foundationmodels/pcc":
-            throw MacrodexAgentFoundationModelsProviderError.pccUnavailable
         default:
             return SystemLanguageModel(useCase: .general)
         }
@@ -187,6 +264,88 @@ final class MacrodexAgentFoundationModelsProvider: MacrodexAgentStreamingProvide
             throw MacrodexAgentFoundationModelsProviderError.unavailableModel("unknown")
         }
     }
+
+#if compiler(>=6.4)
+    @available(iOS 27.0, *)
+    private func validatePCC(model: PrivateCloudComputeLanguageModel) throws {
+        switch model.availability {
+        case .available:
+            return
+        case .unavailable(let reason):
+            throw MacrodexAgentFoundationModelsProviderError.pccUnavailable(Self.pccAvailabilityReason(reason))
+        @unknown default:
+            throw MacrodexAgentFoundationModelsProviderError.pccUnavailable("unknown")
+        }
+    }
+
+    @available(iOS 27.0, *)
+    private func validatePCCQuota(model: PrivateCloudComputeLanguageModel) throws {
+        let usage = model.quotaUsage
+        guard usage.isLimitReached else { return }
+        throw MacrodexAgentFoundationModelsProviderError.pccQuotaLimitReached(
+            Self.pccQuotaDescription(resetDate: usage.resetDate)
+        )
+    }
+
+    @available(iOS 27.0, *)
+    private static func pccAvailabilityReason(
+        _ reason: PrivateCloudComputeLanguageModel.Availability.UnavailableReason
+    ) -> String {
+        switch reason {
+        case .deviceNotEligible:
+            return "this device is not eligible"
+        case .systemNotReady:
+            return "the system is not ready yet"
+        @unknown default:
+            return "unknown"
+        }
+    }
+
+    @available(iOS 27.0, *)
+    private static func pccProviderError(
+        from error: PrivateCloudComputeLanguageModel.Error
+    ) -> MacrodexAgentFoundationModelsProviderError {
+        switch error {
+        case .networkFailure(let networkFailure):
+            return .pccUnavailable("network failure: \(networkFailure.debugDescription)")
+        case .quotaLimitReached(let quotaLimit):
+            return .pccQuotaLimitReached(
+                pccQuotaDescription(
+                    resetDate: quotaLimit.resetDate,
+                    fallback: quotaLimit.debugDescription
+                )
+            )
+        case .serviceUnavailable(let serviceUnavailable):
+            return .pccUnavailable("service unavailable: \(serviceUnavailable.debugDescription)")
+        @unknown default:
+            return .pccUnavailable(error.localizedDescription)
+        }
+    }
+
+    @available(iOS 27.0, *)
+    private static func pccReasoningLevel(from request: MacrodexAgentProviderRequest) -> ContextOptions.ReasoningLevel {
+        let effort = request.metadata["reasoning_effort"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+
+        switch effort {
+        case "low", "light", "none":
+            return .light
+        case "high", "xhigh", "deep":
+            return .deep
+        default:
+            return .moderate
+        }
+    }
+
+    private static func pccQuotaDescription(resetDate: Date?, fallback: String? = nil) -> String {
+        if let resetDate {
+            return "try again after \(resetDate.formatted(date: .abbreviated, time: .shortened))"
+        }
+        let trimmedFallback = fallback?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmedFallback.isEmpty ? "try again later" : trimmedFallback
+    }
+#endif
 
     @available(iOS 26.0, *)
     private static func availabilityReason(_ reason: SystemLanguageModel.Availability.UnavailableReason) -> String {
@@ -216,6 +375,20 @@ final class MacrodexAgentFoundationModelsProvider: MacrodexAgentStreamingProvide
         }
 
         return parts.joined(separator: "\n\n")
+    }
+
+    private static func isPCCModel(_ modelID: String) -> Bool {
+        switch modelID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "pcc",
+             "privatecloudcompute",
+             "private-cloud-compute",
+             "foundationmodels/pcc",
+             "foundationmodels/privatecloudcompute",
+             "foundationmodels/private-cloud-compute":
+            return true
+        default:
+            return false
+        }
     }
 
     private static func prompt(from messages: [MacrodexAgentMessage]) -> String {

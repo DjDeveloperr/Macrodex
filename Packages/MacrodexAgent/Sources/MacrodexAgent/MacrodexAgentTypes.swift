@@ -681,6 +681,8 @@ public enum MacrodexAgentBuiltInModelCatalogs {
                 providerID: MacrodexAgentBuiltInProviderRegistry.foundationModels.id,
                 displayName: "PCC",
                 description: "Apple Foundation Models Private Cloud Compute model when available on this OS.",
+                supportedReasoningEfforts: ["low", "medium", "high"],
+                defaultReasoningEffort: "medium",
                 supportsTools: false,
                 supportsStreaming: true
             )
