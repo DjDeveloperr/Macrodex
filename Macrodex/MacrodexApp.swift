@@ -1593,6 +1593,7 @@ private struct ApprovalPromptView: View {
 extension Notification.Name {
     static let dashboardComposerShouldDismissKeyboard = Notification.Name("com.dj.macrodex.dashboardComposerShouldDismissKeyboard")
     static let dashboardComposerShouldFocusKeyboard = Notification.Name("com.dj.macrodex.dashboardComposerShouldFocusKeyboard")
+    static let dashboardComposerWillOpenModelMenu = Notification.Name("com.dj.macrodex.dashboardComposerWillOpenModelMenu")
 }
 
 private struct DashboardComposerFramePreferenceKey: PreferenceKey {
@@ -1687,6 +1688,8 @@ struct DashboardQuickComposerBar: View {
     @State private var keyboardLift: CGFloat = 0
     @State private var handledFocusRequestID = 0
     @State private var focusDismissalGeneration = 0
+    @State private var keepOpenForModelMenu = false
+    @State private var modelMenuHoldID = 0
     @State private var isFoodSearchMode = false
     @State private var foodSearchLoading = false
     @State private var foodSearchResults: [ComposerFoodSearchResult] = []
@@ -1711,6 +1714,7 @@ struct DashboardQuickComposerBar: View {
             || voiceManager.isRecording
             || voiceManager.isTranscribing
             || isSending
+            || keepOpenForModelMenu
     }
 
     private var popupState: ConversationComposerPopupState {
@@ -1894,16 +1898,35 @@ struct DashboardQuickComposerBar: View {
             keyboardVisible = false
             keyboardTop = nil
             setKeyboardLift(0, notification: nil)
-            isComposerFocused = false
+            if keepOpenForModelMenu {
+                isComposerFocused = false
+            }
             isFoodSearchMode = false
             clearFoodSearchState(cancelTask: true)
         }
         .onReceive(NotificationCenter.default.publisher(for: .dashboardComposerShouldDismissKeyboard)) { _ in
             focusDismissalGeneration += 1
+            modelMenuHoldID += 1
+            keepOpenForModelMenu = false
             isComposerFocused = false
         }
         .onReceive(NotificationCenter.default.publisher(for: .dashboardComposerShouldFocusKeyboard)) { _ in
+            modelMenuHoldID += 1
+            keepOpenForModelMenu = false
             isComposerFocused = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .dashboardComposerWillOpenModelMenu)) { _ in
+            modelMenuHoldID += 1
+            let holdID = modelMenuHoldID
+            keepOpenForModelMenu = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
+                guard modelMenuHoldID == holdID,
+                      keepOpenForModelMenu,
+                      !isComposerFocused,
+                      !keyboardVisible
+                else { return }
+                keepOpenForModelMenu = false
+            }
         }
         .onAppear {
             onActiveChange?(isActive)
@@ -1917,6 +1940,8 @@ struct DashboardQuickComposerBar: View {
         }
         .onDisappear {
             focusDismissalGeneration += 1
+            modelMenuHoldID += 1
+            keepOpenForModelMenu = false
             isComposerFocused = false
             onActiveChange?(false)
             if voiceManager.isRecording { voiceManager.cancelRecording() }

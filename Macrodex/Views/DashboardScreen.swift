@@ -859,6 +859,7 @@ struct DashboardScreen: View {
                         Button {
                             appState.selectedModel = model.id
                             appState.reasoningEffort = model.defaultReasoningEffort.wireValue
+                            refocusDashboardComposerAfterModelMenuSelection()
                         } label: {
                             dashboardMenuLabel(
                                 title: model.displayName,
@@ -877,6 +878,7 @@ struct DashboardScreen: View {
                         let value = effort.reasoningEffort.wireValue
                         Button {
                             appState.reasoningEffort = value
+                            refocusDashboardComposerAfterModelMenuSelection()
                         } label: {
                             dashboardMenuLabel(
                                 title: value,
@@ -889,7 +891,7 @@ struct DashboardScreen: View {
             }
 
             Section {
-                Toggle(isOn: $fastMode) {
+                Toggle(isOn: dashboardFastModeBinding) {
                     Label("Fast responses", systemImage: "bolt.fill")
                 }
             }
@@ -897,16 +899,27 @@ struct DashboardScreen: View {
             Image(systemName: "cpu")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(DashboardTone.textPrimary)
-                .frame(width: 34, height: 34)
-                .contentShape(Circle())
-                .modifier(GlassCircleModifier())
-                .overlay(
-                    Circle()
-                        .strokeBorder(DashboardTone.textSecondary.opacity(0.26), lineWidth: 0.8)
-                        .allowsHitTesting(false)
-                )
         }
+        .simultaneousGesture(TapGesture().onEnded {
+            NotificationCenter.default.post(name: .dashboardComposerWillOpenModelMenu, object: nil)
+        })
         .accessibilityLabel("Model settings")
+    }
+
+    private func refocusDashboardComposerAfterModelMenuSelection() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+            NotificationCenter.default.post(name: .dashboardComposerShouldFocusKeyboard, object: nil)
+        }
+    }
+
+    private var dashboardFastModeBinding: Binding<Bool> {
+        Binding(
+            get: { fastMode },
+            set: { newValue in
+                fastMode = newValue
+                refocusDashboardComposerAfterModelMenuSelection()
+            }
+        )
     }
 
     private var dashboardAvailableModels: [ModelInfo] {
@@ -5731,11 +5744,7 @@ private struct LibraryToolbarButton: View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(.primary)
-                .frame(width: 34, height: 34)
-                .modifier(GlassCircleModifier())
         }
-        .buttonStyle(.plain)
         .accessibilityLabel(label)
     }
 }
