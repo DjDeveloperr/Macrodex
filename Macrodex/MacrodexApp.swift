@@ -1592,6 +1592,7 @@ private struct ApprovalPromptView: View {
 
 extension Notification.Name {
     static let dashboardComposerShouldDismissKeyboard = Notification.Name("com.dj.macrodex.dashboardComposerShouldDismissKeyboard")
+    static let dashboardComposerShouldFocusKeyboard = Notification.Name("com.dj.macrodex.dashboardComposerShouldFocusKeyboard")
 }
 
 private struct DashboardComposerFramePreferenceKey: PreferenceKey {
@@ -1658,6 +1659,7 @@ struct DashboardQuickComposerBar: View {
     @Environment(AppModel.self) private var appModel
     let bottomInset: CGFloat
     let focusRequestID: Int
+    var pullRevealProgress: CGFloat = 0
     let selectedDate: Date
     let onSend: (String, [UIImage], Date) async throws -> Void
 
@@ -1853,7 +1855,8 @@ struct DashboardQuickComposerBar: View {
                 )
             }
         )
-        .offset(y: keyboardVisible ? -keyboardLift : closedComposerYOffset)
+        .offset(y: keyboardVisible ? -keyboardLift : closedComposerYOffset - interactivePullLift)
+        .scaleEffect(1 + (0.012 * clampedPullRevealProgress), anchor: .bottom)
         .onPreferenceChange(DashboardComposerFramePreferenceKey.self) { frame in
             composerFrame = frame
             updateKeyboardLift(notification: nil)
@@ -1877,6 +1880,9 @@ struct DashboardQuickComposerBar: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .dashboardComposerShouldDismissKeyboard)) { _ in
             isComposerFocused = false
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .dashboardComposerShouldFocusKeyboard)) { _ in
+            isComposerFocused = true
         }
         .onAppear {
             focusIfRequested()
@@ -1905,6 +1911,15 @@ struct DashboardQuickComposerBar: View {
 
     private var closedComposerYOffset: CGFloat {
         min(max(bottomInset - 18, 0), 16)
+    }
+
+    private var clampedPullRevealProgress: CGFloat {
+        min(max(pullRevealProgress, 0), 1)
+    }
+
+    private var interactivePullLift: CGFloat {
+        guard !keyboardVisible else { return 0 }
+        return 58 * clampedPullRevealProgress
     }
 
     private func updateKeyboardFrame(from notification: Notification) {

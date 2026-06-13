@@ -42,6 +42,14 @@ private enum DashboardMetricsAnimation {
     }
 }
 
+private struct DashboardScrollTopOffsetPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 struct DashboardScreen: View {
     @Environment(DrawerController.self) private var drawerController
     @Environment(AppModel.self) private var appModel
@@ -59,9 +67,12 @@ struct DashboardScreen: View {
     @State private var dashboardMetricsAreRevealed: Bool
     @State private var dashboardMetricsRevealTask: Task<Void, Never>?
     @State private var keyboardOverlayProgress: CGFloat = 0
+    @State private var dashboardComposerPullProgress: CGFloat = 0
+    @State private var dashboardScrollTopOffset: CGFloat = 0
     @State private var dashboardSummary = ""
     @State private var dashboardSuggestions: [DashboardFoodSuggestion] = []
     @State private var showDashboardModelSelector = false
+    @Namespace private var dashboardModelSelectorNamespace
 
     init(
         bottomInset: CGFloat = 0,
@@ -93,9 +104,16 @@ struct DashboardScreen: View {
                     id: "macrodex.swiftui.dashboard.content",
                     maxDepth: 16
                 )
+                .background(alignment: .top) {
+                    dashboardScrollTopProbe
+                }
                 .padding(.horizontal, DashboardTone.sectionPadding)
                 .padding(.top, 12)
                 .padding(.bottom, 12)
+            }
+            .coordinateSpace(name: Self.dashboardScrollCoordinateSpace)
+            .onPreferenceChange(DashboardScrollTopOffsetPreferenceKey.self) { offset in
+                dashboardScrollTopOffset = offset
             }
             .blur(radius: dashboardContentBlurRadius)
 
@@ -110,6 +128,7 @@ struct DashboardScreen: View {
                 dismissKeyboard()
             }
         )
+        .simultaneousGesture(dashboardComposerPullGesture)
         .onChange(of: drawerController.progress) { _, progress in
             if progress > 0.001 {
                 dismissKeyboardForDrawerOpenIfNeeded()
@@ -162,10 +181,20 @@ struct DashboardScreen: View {
                             showDashboardModelSelector.toggle()
                         }
                     } label: {
-                        Image(systemName: "cpu")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(DashboardTone.textPrimary)
+                        DashboardModelSelectorToolbarButtonLabel(
+                            isExpanded: showDashboardModelSelector
+                        )
+                        .matchedGeometryEffect(
+                            id: Self.dashboardModelSelectorMorphID,
+                            in: dashboardModelSelectorNamespace,
+                            properties: .frame,
+                            anchor: .topTrailing,
+                            isSource: !showDashboardModelSelector
+                        )
                     }
+                    .buttonStyle(.plain)
+                    .opacity(showDashboardModelSelector ? 0.001 : 1)
+                    .accessibilityHidden(showDashboardModelSelector)
                     .accessibilityLabel("Model settings")
                 } else {
                     Button {
@@ -256,13 +285,14 @@ struct DashboardScreen: View {
 
     @ViewBuilder
     private var dashboardKeyboardBlurOverlay: some View {
-        if keyboardOverlayProgress > 0.001 {
+        let progress = dashboardAtmosphereProgress
+        if progress > 0.001 {
             GeometryReader { proxy in
                 let bleed = dashboardKeyboardBlurBottomBleed
                 let overlayHeight = proxy.size.height + bleed
                 Rectangle()
                     .fill(.regularMaterial)
-                    .opacity(0.90 * keyboardOverlayProgress)
+                    .opacity(0.90 * progress)
                     .frame(width: proxy.size.width, height: overlayHeight, alignment: .top)
                     .mask(
                         LinearGradient(
@@ -283,6 +313,7 @@ struct DashboardScreen: View {
                 .onTapGesture {
                     UIApplication.shared.macrodexDismissKeyboard()
                 }
+                .allowsHitTesting(keyboardOverlayProgress > 0.001)
                 .ignoresSafeArea(.container, edges: .bottom)
                 .ignoresSafeArea(.keyboard, edges: .bottom)
                 .transition(.opacity)
@@ -316,7 +347,14 @@ struct DashboardScreen: View {
                     .frame(width: min(proxy.size.width - 24, 368))
                     .padding(.top, 8)
                     .padding(.trailing, 12)
-                    .transition(.scale(scale: 0.96, anchor: .topTrailing).combined(with: .opacity))
+                    .matchedGeometryEffect(
+                        id: Self.dashboardModelSelectorMorphID,
+                        in: dashboardModelSelectorNamespace,
+                        properties: .frame,
+                        anchor: .topTrailing,
+                        isSource: showDashboardModelSelector
+                    )
+                    .transition(.opacity)
                 }
             }
             .zIndex(80)
@@ -324,7 +362,11 @@ struct DashboardScreen: View {
     }
 
     private var dashboardContentBlurRadius: CGFloat {
-        6.2 * keyboardOverlayProgress
+        6.2 * dashboardAtmosphereProgress
+    }
+
+    private var dashboardAtmosphereProgress: CGFloat {
+        max(keyboardOverlayProgress, dashboardComposerPullProgress * 0.82)
     }
 
     private var dashboardKeyboardBlurBottomBleed: CGFloat {
@@ -341,6 +383,7 @@ struct DashboardScreen: View {
             DashboardQuickComposerBar(
                 bottomInset: bottomInset,
                 focusRequestID: composerFocusRequestID,
+                pullRevealProgress: dashboardComposerPullProgress,
                 selectedDate: store.selectedDate,
                 onSend: onQuickComposerSend
             )
@@ -624,6 +667,9 @@ struct DashboardScreen: View {
 
         let update = {
             keyboardOverlayProgress = clamped
+            if clamped > 0.001 {
+                dashboardComposerPullProgress = 0
+            }
             if clamped <= 0.001 {
                 showDashboardModelSelector = false
             }
@@ -706,6 +752,88 @@ struct DashboardScreen: View {
 
     private var isDashboardComposerOpen: Bool {
         keyboardOverlayProgress > 0.001
+    }
+
+    private var dashboardComposerPullGesture: some Gesture {
+        DragGesture(minimumDistance: 8, coordinateSpace: .local)
+            .onChanged { value in
+                updateDashboardComposerPull(translation: value.translation.height)
+            }
+            .onEnded { value in
+                finishDashboardComposerPull(
+                    translation: value.translation.height,
+                    predictedTranslation: value.predictedEndTranslation.height
+                )
+            }
+    }
+
+    @ViewBuilder
+    private var dashboardScrollTopProbe: some View {
+        Color.clear
+            .frame(height: 0)
+            .background(
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: DashboardScrollTopOffsetPreferenceKey.self,
+                        value: proxy.frame(in: .named(Self.dashboardScrollCoordinateSpace)).minY
+                    )
+                }
+            )
+    }
+
+    private func updateDashboardComposerPull(translation: CGFloat) {
+        guard canInteractivelyRevealDashboardComposer,
+              dashboardScrollTopOffset > -6,
+              translation > 0
+        else {
+            if dashboardComposerPullProgress > 0 {
+                dashboardComposerPullProgress = 0
+            }
+            return
+        }
+
+        let pull = max(translation, dashboardScrollTopOffset)
+        let progress = min(max((pull - Self.dashboardPullDeadZone) / Self.dashboardPullRevealDistance, 0), 1)
+        dashboardComposerPullProgress = progress
+        if progress > 0.01 {
+            showDashboardModelSelector = false
+        }
+    }
+
+    private func finishDashboardComposerPull(translation: CGFloat, predictedTranslation: CGFloat) {
+        guard dashboardComposerPullProgress > 0 else { return }
+
+        let predicted = max(translation, predictedTranslation)
+        let shouldOpen = canInteractivelyRevealDashboardComposer
+            && dashboardScrollTopOffset > -8
+            && (dashboardComposerPullProgress >= Self.dashboardPullCommitProgress
+                || predicted >= Self.dashboardPullCommitDistance)
+
+        if shouldOpen {
+            AppHaptics.medium()
+            withAnimation(.easeOut(duration: 0.12)) {
+                dashboardComposerPullProgress = 1
+            }
+            NotificationCenter.default.post(name: .dashboardComposerShouldFocusKeyboard, object: nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                    dashboardComposerPullProgress = 0
+                }
+            }
+        } else {
+            withAnimation(.spring(response: 0.34, dampingFraction: 0.9)) {
+                dashboardComposerPullProgress = 0
+            }
+        }
+    }
+
+    private var canInteractivelyRevealDashboardComposer: Bool {
+        onQuickComposerSend != nil
+            && !isDashboardComposerOpen
+            && !drawerController.shouldSuppressContentInteractions
+            && activeSheet == nil
+            && selectedLogItem == nil
+            && selectedMeal == nil
     }
 
     private var dashboardComposerServerId: String? {
@@ -1109,6 +1237,12 @@ struct DashboardScreen: View {
         return formatter
     }()
     private static let dashboardInsightRefreshInterval: TimeInterval = 60 * 60
+    private static let dashboardScrollCoordinateSpace = "macrodex.dashboard.scroll"
+    private static let dashboardModelSelectorMorphID = "macrodex.dashboard.model.selector"
+    private static let dashboardPullDeadZone: CGFloat = 12
+    private static let dashboardPullRevealDistance: CGFloat = 118
+    private static let dashboardPullCommitProgress: CGFloat = 0.72
+    private static let dashboardPullCommitDistance: CGFloat = 132
 
     private func actionButton(_ title: String, icon: String, tint: Color, action: @escaping () -> Void) -> some View {
         Button(action: action) {
@@ -1256,6 +1390,27 @@ private struct DashboardModelSelectorGlassPopup: View {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .fill(.ultraThinMaterial)
         }
+    }
+}
+
+private struct DashboardModelSelectorToolbarButtonLabel: View {
+    let isExpanded: Bool
+
+    var body: some View {
+        Image(systemName: "cpu")
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(DashboardTone.textPrimary)
+            .frame(width: 34, height: 34)
+            .contentShape(Circle())
+            .modifier(GlassCircleModifier())
+            .overlay(
+                Circle()
+                    .strokeBorder(
+                        (isExpanded ? DashboardTone.accent : DashboardTone.textSecondary).opacity(isExpanded ? 0.55 : 0.26),
+                        lineWidth: 0.8
+                    )
+                    .allowsHitTesting(false)
+            )
     }
 }
 
