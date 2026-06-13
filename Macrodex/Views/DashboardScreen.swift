@@ -1,6 +1,7 @@
 import Foundation
 import AppIntents
 import CoreSpotlight
+import HealthKit
 import PhotosUI
 import SQLite3
 import SwiftUI
@@ -58,6 +59,7 @@ struct DashboardScreen: View {
     let onQuickComposerSend: ((String, [UIImage], Date) async throws -> Void)?
     let composerFocusRequestID: Int
 
+    @AppStorage("fastMode") private var fastMode = false
     @StateObject private var store = CalorieTrackerStore.shared
     @State private var activeSheet: DashboardSheet?
     @State private var selectedLogItem: CalorieLogItem?
@@ -71,8 +73,7 @@ struct DashboardScreen: View {
     @State private var dashboardScrollTopOffset: CGFloat = 0
     @State private var dashboardSummary = ""
     @State private var dashboardSuggestions: [DashboardFoodSuggestion] = []
-    @State private var showDashboardModelSelector = false
-    @Namespace private var dashboardModelSelectorNamespace
+    @State private var dashboardComposerIsActive = false
 
     init(
         bottomInset: CGFloat = 0,
@@ -118,7 +119,6 @@ struct DashboardScreen: View {
             .blur(radius: dashboardContentBlurRadius)
 
             dashboardKeyboardBlurOverlay
-            dashboardModelSelectorOverlay
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
         .scrollDisabled(drawerController.progress > 0.001)
@@ -176,26 +176,7 @@ struct DashboardScreen: View {
             }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if isDashboardComposerOpen {
-                    Button {
-                        withAnimation(.snappy(duration: 0.22)) {
-                            showDashboardModelSelector.toggle()
-                        }
-                    } label: {
-                        DashboardModelSelectorToolbarButtonLabel(
-                            isExpanded: showDashboardModelSelector
-                        )
-                        .matchedGeometryEffect(
-                            id: Self.dashboardModelSelectorMorphID,
-                            in: dashboardModelSelectorNamespace,
-                            properties: .frame,
-                            anchor: .topTrailing,
-                            isSource: !showDashboardModelSelector
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .opacity(showDashboardModelSelector ? 0.001 : 1)
-                    .accessibilityHidden(showDashboardModelSelector)
-                    .accessibilityLabel("Model settings")
+                    dashboardModelMenu
                 } else {
                     Button {
                         guard canOpenDashboardSheet else { return }
@@ -320,47 +301,6 @@ struct DashboardScreen: View {
         }
     }
 
-    @ViewBuilder
-    private var dashboardModelSelectorOverlay: some View {
-        if showDashboardModelSelector && isDashboardComposerOpen {
-            GeometryReader { proxy in
-                ZStack(alignment: .topTrailing) {
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .ignoresSafeArea()
-                        .onTapGesture {
-                            withAnimation(.snappy(duration: 0.18)) {
-                                showDashboardModelSelector = false
-                            }
-                        }
-
-                    DashboardModelSelectorGlassPopup(
-                        models: dashboardAvailableModels,
-                        selectedModel: dashboardSelectedModelBinding,
-                        reasoningEffort: dashboardReasoningEffortBinding,
-                        onDismiss: {
-                            withAnimation(.snappy(duration: 0.18)) {
-                                showDashboardModelSelector = false
-                            }
-                        }
-                    )
-                    .frame(width: min(proxy.size.width - 24, 368))
-                    .padding(.top, 8)
-                    .padding(.trailing, 12)
-                    .matchedGeometryEffect(
-                        id: Self.dashboardModelSelectorMorphID,
-                        in: dashboardModelSelectorNamespace,
-                        properties: .frame,
-                        anchor: .topTrailing,
-                        isSource: showDashboardModelSelector
-                    )
-                    .transition(.opacity)
-                }
-            }
-            .zIndex(80)
-        }
-    }
-
     private var dashboardContentBlurRadius: CGFloat {
         6.2 * dashboardAtmosphereProgress
     }
@@ -385,6 +325,9 @@ struct DashboardScreen: View {
                 focusRequestID: composerFocusRequestID,
                 pullRevealProgress: dashboardComposerPullProgress,
                 selectedDate: store.selectedDate,
+                onActiveChange: { isActive in
+                    dashboardComposerIsActive = isActive
+                },
                 onSend: onQuickComposerSend
             )
             .macrodexSimDeckElement(
@@ -414,6 +357,11 @@ struct DashboardScreen: View {
                     .padding(.bottom, 9)
             }
             remainingStatusText
+            if let note = store.nutritionDataSourceNote {
+                Text(note)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(DashboardTone.textSecondary)
+            }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Calories")
@@ -670,9 +618,6 @@ struct DashboardScreen: View {
             if clamped > 0.001 {
                 dashboardComposerPullProgress = 0
             }
-            if clamped <= 0.001 {
-                showDashboardModelSelector = false
-            }
         }
 
         guard let notification,
@@ -694,7 +639,6 @@ struct DashboardScreen: View {
         activeSheet = nil
         selectedLogItem = nil
         selectedMeal = nil
-        showDashboardModelSelector = false
     }
 
     private func prepareDashboardMetricsForOpen() {
@@ -751,7 +695,7 @@ struct DashboardScreen: View {
     }
 
     private var isDashboardComposerOpen: Bool {
-        keyboardOverlayProgress > 0.001
+        keyboardOverlayProgress > 0.001 || dashboardComposerIsActive
     }
 
     private var dashboardComposerPullGesture: some Gesture {
@@ -801,9 +745,6 @@ struct DashboardScreen: View {
 
         let progress = min(max((overscroll - Self.dashboardPullDeadZone) / Self.dashboardPullRevealDistance, 0), 1)
         dashboardComposerPullProgress = progress
-        if progress > 0.01 {
-            showDashboardModelSelector = false
-        }
     }
 
     private func finishDashboardComposerPull(translation: CGFloat, predictedTranslation: CGFloat) {
@@ -840,23 +781,88 @@ struct DashboardScreen: View {
             ?? appModel.snapshot?.servers.first?.serverId
     }
 
+    private var dashboardModelMenu: some View {
+        Menu {
+            if dashboardAvailableModels.isEmpty {
+                Text("No models available")
+            } else {
+                Section("Model") {
+                    ForEach(dashboardAvailableModels) { model in
+                        Button {
+                            appState.selectedModel = model.id
+                            appState.reasoningEffort = model.defaultReasoningEffort.wireValue
+                        } label: {
+                            dashboardMenuLabel(
+                                title: model.displayName,
+                                subtitle: model.isDefault ? "Default" : nil,
+                                isSelected: model.id == dashboardCurrentModel?.id
+                            )
+                        }
+                    }
+                }
+            }
+
+            if let currentModel = dashboardCurrentModel,
+               !currentModel.supportedReasoningEfforts.isEmpty {
+                Section("Reasoning") {
+                    ForEach(currentModel.supportedReasoningEfforts) { effort in
+                        let value = effort.reasoningEffort.wireValue
+                        Button {
+                            appState.reasoningEffort = value
+                        } label: {
+                            dashboardMenuLabel(
+                                title: value,
+                                subtitle: nil,
+                                isSelected: value == appState.reasoningEffort
+                            )
+                        }
+                    }
+                }
+            }
+
+            Section {
+                Toggle(isOn: $fastMode) {
+                    Label("Fast responses", systemImage: "bolt.fill")
+                }
+            }
+        } label: {
+            Image(systemName: "cpu")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(DashboardTone.textPrimary)
+                .frame(width: 34, height: 34)
+                .contentShape(Circle())
+                .modifier(GlassCircleModifier())
+                .overlay(
+                    Circle()
+                        .strokeBorder(DashboardTone.textSecondary.opacity(0.26), lineWidth: 0.8)
+                        .allowsHitTesting(false)
+                )
+        }
+        .accessibilityLabel("Model settings")
+    }
+
     private var dashboardAvailableModels: [ModelInfo] {
         guard let serverId = dashboardComposerServerId else { return [] }
         return appModel.availableModels(for: serverId)
     }
 
-    private var dashboardSelectedModelBinding: Binding<String> {
-        Binding(
-            get: { appState.selectedModel },
-            set: { appState.selectedModel = $0 }
-        )
+    private var dashboardCurrentModel: ModelInfo? {
+        let selected = appState.selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let match = dashboardAvailableModels.first(where: { $0.id == selected }) {
+            return match
+        }
+        return dashboardAvailableModels.first(where: \.isDefault) ?? dashboardAvailableModels.first
     }
 
-    private var dashboardReasoningEffortBinding: Binding<String> {
-        Binding(
-            get: { appState.reasoningEffort },
-            set: { appState.reasoningEffort = $0 }
-        )
+    @ViewBuilder
+    private func dashboardMenuLabel(title: String, subtitle: String?, isSelected: Bool) -> some View {
+        if isSelected {
+            Label(title, systemImage: "checkmark")
+        } else if let subtitle {
+            Text("\(title) (\(subtitle))")
+        } else {
+            Text(title)
+        }
     }
 
     private var loggedMeals: [(meal: CalorieMealType, items: [CalorieLogItem])] {
@@ -1237,7 +1243,6 @@ struct DashboardScreen: View {
     }()
     private static let dashboardInsightRefreshInterval: TimeInterval = 60 * 60
     private static let dashboardScrollCoordinateSpace = "macrodex.dashboard.scroll"
-    private static let dashboardModelSelectorMorphID = "macrodex.dashboard.model.selector"
     private static let dashboardPullDeadZone: CGFloat = 12
     private static let dashboardPullRevealDistance: CGFloat = 118
     private static let dashboardPullCommitProgress: CGFloat = 0.72
@@ -1316,100 +1321,6 @@ struct DashboardScreen: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Add food")
         }
-    }
-}
-
-private struct DashboardModelSelectorGlassPopup: View {
-    let models: [ModelInfo]
-    @Binding var selectedModel: String
-    @Binding var reasoningEffort: String
-    let onDismiss: () -> Void
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Model")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(DashboardTone.textPrimary)
-                    Text(currentModelName)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(DashboardTone.textSecondary)
-                        .lineLimit(1)
-                }
-                Spacer()
-                Button(action: onDismiss) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(DashboardTone.textPrimary)
-                        .frame(width: 28, height: 28)
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Close model settings")
-            }
-            .padding(.horizontal, 14)
-            .padding(.top, 12)
-            .padding(.bottom, 6)
-
-            Divider()
-                .background(DashboardTone.divider.opacity(0.55))
-                .padding(.horizontal, 12)
-
-            InlineModelSelectorView(
-                models: models,
-                selectedModel: $selectedModel,
-                reasoningEffort: $reasoningEffort,
-                threadKey: nil,
-                onDismiss: onDismiss
-            )
-        }
-        .background(popupBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.18), radius: 26, y: 14)
-    }
-
-    private var currentModelName: String {
-        if let model = models.first(where: { $0.id == selectedModel }) {
-            return model.displayName
-        }
-        return models.first(where: \.isDefault)?.displayName ?? models.first?.displayName ?? "System"
-    }
-
-    @ViewBuilder
-    private var popupBackground: some View {
-        if #available(iOS 26.0, *) {
-            Color.clear
-                .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22))
-        } else {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(.ultraThinMaterial)
-        }
-    }
-}
-
-private struct DashboardModelSelectorToolbarButtonLabel: View {
-    let isExpanded: Bool
-
-    var body: some View {
-        Image(systemName: "cpu")
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(DashboardTone.textPrimary)
-            .frame(width: 34, height: 34)
-            .contentShape(Circle())
-            .modifier(GlassCircleModifier())
-            .overlay(
-                Circle()
-                    .strokeBorder(
-                        (isExpanded ? DashboardTone.accent : DashboardTone.textSecondary).opacity(isExpanded ? 0.55 : 0.26),
-                        lineWidth: 0.8
-                    )
-                    .allowsHitTesting(false)
-            )
     }
 }
 
@@ -1735,6 +1646,9 @@ private struct WeeklyMacroStrip: View {
         }
         .onChange(of: store.selectedDate) { _, _ in
             syncVisibleWeekToSelection()
+        }
+        .task(id: visibleWeekStart) {
+            await store.reconcileHealthKitNutrition(forWeekStarting: visibleWeekStart)
         }
     }
 
@@ -6195,6 +6109,10 @@ struct CalorieTotals: Equatable, Codable {
     var protein: Double = 0
     var carbs: Double = 0
     var fat: Double = 0
+
+    var hasNutrition: Bool {
+        calories > 0.01 || protein > 0.01 || carbs > 0.01 || fat > 0.01
+    }
 }
 
 struct CalorieGoal: Equatable, Codable {
@@ -6554,6 +6472,163 @@ struct CalorieDaySummary: Equatable {
     var logCount = 0
 }
 
+private struct HealthKitNutritionDayBreakdown: Equatable {
+    var macrodexTotals = CalorieTotals()
+    var otherAppTotals = CalorieTotals()
+
+    var hasHealthKitNutrition: Bool {
+        macrodexTotals.hasNutrition || otherAppTotals.hasNutrition
+    }
+
+    func reconciledTotals(localTotals: CalorieTotals) -> CalorieTotals {
+        CalorieTotals(
+            calories: max(localTotals.calories, macrodexTotals.calories) + otherAppTotals.calories,
+            protein: max(localTotals.protein, macrodexTotals.protein) + otherAppTotals.protein,
+            carbs: max(localTotals.carbs, macrodexTotals.carbs) + otherAppTotals.carbs,
+            fat: max(localTotals.fat, macrodexTotals.fat) + otherAppTotals.fat
+        )
+    }
+
+    func sourceNote(localTotals: CalorieTotals, reconciledTotals: CalorieTotals) -> String? {
+        guard hasHealthKitNutrition, reconciledTotals.hasNutrition else { return nil }
+        let usesMacrodexHealthHistory =
+            macrodexTotals.calories > localTotals.calories + 0.5 ||
+            macrodexTotals.protein > localTotals.protein + 0.5 ||
+            macrodexTotals.carbs > localTotals.carbs + 0.5 ||
+            macrodexTotals.fat > localTotals.fat + 0.5 ||
+            (!localTotals.hasNutrition && macrodexTotals.hasNutrition)
+        let usesOtherApps = otherAppTotals.hasNutrition
+
+        switch (usesMacrodexHealthHistory, usesOtherApps) {
+        case (true, true): return "Apple Health + Macrodex history"
+        case (true, false): return "Recovered from Apple Health"
+        case (false, true): return "Includes Apple Health"
+        case (false, false): return nil
+        }
+    }
+}
+
+private final class HealthKitNutritionReconciler {
+    static let shared = HealthKitNutritionReconciler()
+
+    private struct Metric {
+        let identifier: HKQuantityTypeIdentifier
+        let unit: HKUnit
+        let assign: (inout CalorieTotals, Double) -> Void
+    }
+
+    private struct SourceAmounts {
+        var macrodex: Double = 0
+        var otherApps: Double = 0
+    }
+
+    private let healthStore = HKHealthStore()
+    private let bundleIdentifier = Bundle.main.bundleIdentifier ?? "com.dj.Macrodex"
+    private let calendar = Calendar.current
+
+    private static let metrics: [Metric] = [
+        Metric(identifier: .dietaryEnergyConsumed, unit: .kilocalorie()) { $0.calories = $1 },
+        Metric(identifier: .dietaryProtein, unit: .gram()) { $0.protein = $1 },
+        Metric(identifier: .dietaryCarbohydrates, unit: .gram()) { $0.carbs = $1 },
+        Metric(identifier: .dietaryFatTotal, unit: .gram()) { $0.fat = $1 }
+    ]
+
+    func dailyBreakdowns(startDate: Date, endDateExclusive: Date) async -> [String: HealthKitNutritionDayBreakdown] {
+        guard HKHealthStore.isHealthDataAvailable(),
+              startDate < endDateExclusive
+        else {
+            return [:]
+        }
+
+        var breakdowns: [String: HealthKitNutritionDayBreakdown] = [:]
+        for metric in Self.metrics {
+            let amountsByDay = await dailyAmounts(
+                for: metric,
+                startDate: startDate,
+                endDateExclusive: endDateExclusive
+            )
+            for (dateKey, amounts) in amountsByDay {
+                var breakdown = breakdowns[dateKey] ?? HealthKitNutritionDayBreakdown()
+                metric.assign(&breakdown.macrodexTotals, amounts.macrodex)
+                metric.assign(&breakdown.otherAppTotals, amounts.otherApps)
+                breakdowns[dateKey] = breakdown
+            }
+        }
+        return breakdowns.filter { $0.value.hasHealthKitNutrition }
+    }
+
+    private func dailyAmounts(
+        for metric: Metric,
+        startDate: Date,
+        endDateExclusive: Date
+    ) async -> [String: SourceAmounts] {
+        guard let quantityType = HKObjectType.quantityType(forIdentifier: metric.identifier) else {
+            return [:]
+        }
+
+        return await withCheckedContinuation { continuation in
+            let predicate = HKQuery.predicateForSamples(
+                withStart: startDate,
+                end: endDateExclusive,
+                options: [.strictStartDate]
+            )
+            var interval = DateComponents()
+            interval.day = 1
+            let query = HKStatisticsCollectionQuery(
+                quantityType: quantityType,
+                quantitySamplePredicate: predicate,
+                options: [.cumulativeSum, .separateBySource],
+                anchorDate: startDate,
+                intervalComponents: interval
+            )
+            query.initialResultsHandler = { [calendar, bundleIdentifier] _, collection, error in
+                guard error == nil, let collection else {
+                    continuation.resume(returning: [:])
+                    return
+                }
+
+                var totals: [String: SourceAmounts] = [:]
+                collection.enumerateStatistics(from: startDate, to: endDateExclusive) { statistics, _ in
+                    var dayAmounts = SourceAmounts()
+                    let sources = statistics.sources ?? []
+                    if sources.isEmpty {
+                        dayAmounts.otherApps += statistics.sumQuantity()?.doubleValue(for: metric.unit) ?? 0
+                    } else {
+                        for source in sources {
+                            let value = statistics.sumQuantity(for: source)?.doubleValue(for: metric.unit) ?? 0
+                            guard value > 0 else { continue }
+                            if source.bundleIdentifier == bundleIdentifier ||
+                                source.bundleIdentifier == "com.dj.Macrodex" ||
+                                source.name.localizedCaseInsensitiveContains("Macrodex") {
+                                dayAmounts.macrodex += value
+                            } else {
+                                dayAmounts.otherApps += value
+                            }
+                        }
+                    }
+
+                    guard dayAmounts.macrodex > 0 || dayAmounts.otherApps > 0 else { return }
+                    let dateKey = Self.dateKey(for: statistics.startDate, calendar: calendar)
+                    totals[dateKey, default: SourceAmounts()].macrodex += dayAmounts.macrodex
+                    totals[dateKey, default: SourceAmounts()].otherApps += dayAmounts.otherApps
+                }
+                continuation.resume(returning: totals)
+            }
+            healthStore.execute(query)
+        }
+    }
+
+    private static func dateKey(for date: Date, calendar: Calendar) -> String {
+        let components = calendar.dateComponents([.year, .month, .day], from: calendar.startOfDay(for: date))
+        return String(
+            format: "%04d-%02d-%02d",
+            components.year ?? 0,
+            components.month ?? 0,
+            components.day ?? 0
+        )
+    }
+}
+
 struct CalorieLoggedDaySummary: Equatable {
     var dateKey: String
     var totals = CalorieTotals()
@@ -6604,6 +6679,7 @@ final class CalorieTrackerStore: ObservableObject {
     @Published var errorMessage: String?
     @Published var selectedDate = Calendar.current.startOfDay(for: Date())
     @Published var dashboardRefreshGeneration = 0
+    @Published var nutritionDataSourceNote: String?
 
     private(set) var hasClaimedInitialDashboardMetricsReveal = false
     private var db: OpaquePointer?
@@ -6643,6 +6719,7 @@ final class CalorieTrackerStore: ObservableObject {
             try loadRecentFoodMemories()
             try loadTemplates()
             try loadDailyNote()
+            await reconcileHealthKitNutrition()
             errorMessage = nil
             queueHealthKitSyncIfNeeded(for: todayKey)
             publishProgressWidgetSnapshotIfNeeded()
@@ -7651,9 +7728,16 @@ final class CalorieTrackerStore: ObservableObject {
             try openIfNeeded()
             try migrate()
             let dateKey = Self.dateFormatter.string(from: calendar.startOfDay(for: date))
+            let localTotals = try loadDayTotals(dateKey: dateKey)
+            let start = calendar.startOfDay(for: date)
+            let end = calendar.date(byAdding: .day, value: 1, to: start) ?? start
+            let healthBreakdown = await HealthKitNutritionReconciler.shared.dailyBreakdowns(
+                startDate: start,
+                endDateExclusive: end
+            )[dateKey]
             return CalorieLoggedDaySummary(
                 dateKey: dateKey,
-                totals: try loadDayTotals(dateKey: dateKey),
+                totals: healthBreakdown?.reconciledTotals(localTotals: localTotals) ?? localTotals,
                 goal: try loadGoal(forDateKey: dateKey),
                 logs: try loadLogItems(dateKey: dateKey)
             )
@@ -7671,6 +7755,7 @@ final class CalorieTrackerStore: ObservableObject {
         todayTotals = totals
         todayLogs = logs
         goal = try loadGoal()
+        nutritionDataSourceNote = nil
     }
 
     private func loadDayTotals(dateKey: String) throws -> CalorieTotals {
@@ -7857,6 +7942,71 @@ final class CalorieTrackerStore: ObservableObject {
         }
 
         recentDaySummaries = Dictionary(uniqueKeysWithValues: rows.map { ($0.key, $0.summary) })
+    }
+
+    private func reconcileHealthKitNutrition() async {
+        await reconcileHealthKitNutrition(forWeekStarting: calendar.macrodexStartOfWeek(for: selectedDate))
+    }
+
+    func reconcileHealthKitNutrition(forWeekStarting requestedWeekStart: Date) async {
+        do {
+            try openIfNeeded()
+            try migrate()
+        } catch {
+            return
+        }
+
+        let today = calendar.startOfDay(for: Date())
+        let weekStart = calendar.macrodexStartOfWeek(for: requestedWeekStart)
+        let weekEnd = calendar.date(byAdding: .day, value: 7, to: weekStart) ?? weekStart
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) ?? today
+        let queryEnd = min(weekEnd, tomorrow)
+        guard weekStart < queryEnd else { return }
+
+        let selectedDateKey = todayKey
+        let localSelectedTotals = todayTotals
+        let localSelectedLogCount = todayLogs.count
+        let breakdowns = await HealthKitNutritionReconciler.shared.dailyBreakdowns(
+            startDate: weekStart,
+            endDateExclusive: queryEnd
+        )
+
+        guard !breakdowns.isEmpty else { return }
+
+        for (dateKey, breakdown) in breakdowns {
+            let localSummary: CalorieDaySummary
+            if dateKey == selectedDateKey {
+                localSummary = CalorieDaySummary(
+                    totals: localSelectedTotals,
+                    goal: goal,
+                    logCount: localSelectedLogCount
+                )
+            } else if let cached = recentDaySummaries[dateKey] {
+                localSummary = cached
+            } else {
+                localSummary = (try? loadDaySummary(dateKey: dateKey)) ?? CalorieDaySummary()
+            }
+
+            let reconciledTotals = breakdown.reconciledTotals(localTotals: localSummary.totals)
+            guard reconciledTotals != localSummary.totals else {
+                continue
+            }
+
+            let reconciledSummary = CalorieDaySummary(
+                totals: reconciledTotals,
+                goal: localSummary.goal,
+                logCount: localSummary.logCount
+            )
+            recentDaySummaries[dateKey] = reconciledSummary
+
+            if dateKey == selectedDateKey {
+                todayTotals = reconciledTotals
+                nutritionDataSourceNote = breakdown.sourceNote(
+                    localTotals: localSelectedTotals,
+                    reconciledTotals: reconciledTotals
+                )
+            }
+        }
     }
 
     private func loadDaySummary(dateKey: String) throws -> CalorieDaySummary {

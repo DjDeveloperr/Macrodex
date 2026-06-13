@@ -2394,20 +2394,18 @@ static NSDictionary<NSString *, id> *codex_healthkit_sync_nutrition_day(NSString
 
         NSString *syncIdentifier = codex_healthkit_nutrition_sync_identifier(normalizedDateKey, nutrientKey);
         double amount = [amounts[nutrientKey] doubleValue];
-        if (force || amount <= 0) {
-            NSError *deleteError = nil;
-            NSUInteger deletedCount = 0;
-            if (!codex_healthkit_delete_nutrition_sync_sample(type, syncIdentifier, &deletedCount, &deleteError)) {
-                [skipped addObject:@{@"key": nutrientKey, @"label": label, @"identifier": identifier, @"reason": deleteError.localizedDescription ?: @"Failed to delete previous Apple Health sample."}];
-                continue;
-            }
-            if (deletedCount > 0) {
-                [deleted addObject:@{@"key": nutrientKey, @"label": label, @"identifier": identifier, @"count": @(deletedCount)}];
-            }
-            if (amount <= 0) {
-                codex_healthkit_mark_nutrition_sync_version(normalizedDateKey, nutrientKey, version);
-                continue;
-            }
+        NSError *deleteError = nil;
+        NSUInteger deletedCount = 0;
+        if (!codex_healthkit_delete_nutrition_sync_sample(type, syncIdentifier, &deletedCount, &deleteError)) {
+            [skipped addObject:@{@"key": nutrientKey, @"label": label, @"identifier": identifier, @"reason": deleteError.localizedDescription ?: @"Failed to delete previous Apple Health sample."}];
+            continue;
+        }
+        if (deletedCount > 0) {
+            [deleted addObject:@{@"key": nutrientKey, @"label": label, @"identifier": identifier, @"count": @(deletedCount)}];
+        }
+        if (amount <= 0) {
+            codex_healthkit_mark_nutrition_sync_version(normalizedDateKey, nutrientKey, version);
+            continue;
         }
 
         NSError *unitError = nil;

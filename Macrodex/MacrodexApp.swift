@@ -1661,6 +1661,7 @@ struct DashboardQuickComposerBar: View {
     let focusRequestID: Int
     var pullRevealProgress: CGFloat = 0
     let selectedDate: Date
+    var onActiveChange: ((Bool) -> Void)? = nil
     let onSend: (String, [UIImage], Date) async throws -> Void
 
     @State private var inputText = ""
@@ -1697,6 +1698,17 @@ struct DashboardQuickComposerBar: View {
 
     private var canSend: Bool {
         (!trimmedText.isEmpty || !attachedImages.isEmpty) && !isSending
+    }
+
+    private var isActive: Bool {
+        isComposerFocused
+            || keyboardVisible
+            || !trimmedText.isEmpty
+            || !attachedImages.isEmpty
+            || isFoodSearchMode
+            || voiceManager.isRecording
+            || voiceManager.isTranscribing
+            || isSending
     }
 
     private var popupState: ConversationComposerPopupState {
@@ -1889,13 +1901,18 @@ struct DashboardQuickComposerBar: View {
             isComposerFocused = true
         }
         .onAppear {
+            onActiveChange?(isActive)
             focusIfRequested()
+        }
+        .onChange(of: isActive) { _, active in
+            onActiveChange?(active)
         }
         .onChange(of: focusRequestID) { _, _ in
             focusIfRequested()
         }
         .onDisappear {
             isComposerFocused = false
+            onActiveChange?(false)
             if voiceManager.isRecording { voiceManager.cancelRecording() }
             foodSearchTask?.cancel()
             foodSearchTask = nil
