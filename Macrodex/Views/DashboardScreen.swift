@@ -305,7 +305,7 @@ struct DashboardScreen: View {
             }
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    UIApplication.shared.macrodexDismissKeyboard()
+                    dismissKeyboard()
                 }
                 .allowsHitTesting(keyboardOverlayProgress > 0.001)
                 .ignoresSafeArea(.container, edges: .bottom)

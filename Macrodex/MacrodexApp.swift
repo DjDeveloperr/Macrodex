@@ -1685,6 +1685,8 @@ struct DashboardQuickComposerBar: View {
     @State private var restingComposerMaxY: CGFloat?
     @State private var composerContentHeight: CGFloat = 56
     @State private var keyboardLift: CGFloat = 0
+    @State private var handledFocusRequestID = 0
+    @State private var focusDismissalGeneration = 0
     @State private var isFoodSearchMode = false
     @State private var foodSearchLoading = false
     @State private var foodSearchResults: [ComposerFoodSearchResult] = []
@@ -1888,13 +1890,16 @@ struct DashboardQuickComposerBar: View {
             updateKeyboardFrame(from: notification)
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            focusDismissalGeneration += 1
             keyboardVisible = false
             keyboardTop = nil
             setKeyboardLift(0, notification: nil)
+            isComposerFocused = false
             isFoodSearchMode = false
             clearFoodSearchState(cancelTask: true)
         }
         .onReceive(NotificationCenter.default.publisher(for: .dashboardComposerShouldDismissKeyboard)) { _ in
+            focusDismissalGeneration += 1
             isComposerFocused = false
         }
         .onReceive(NotificationCenter.default.publisher(for: .dashboardComposerShouldFocusKeyboard)) { _ in
@@ -1911,6 +1916,7 @@ struct DashboardQuickComposerBar: View {
             focusIfRequested()
         }
         .onDisappear {
+            focusDismissalGeneration += 1
             isComposerFocused = false
             onActiveChange?(false)
             if voiceManager.isRecording { voiceManager.cancelRecording() }
@@ -1920,8 +1926,14 @@ struct DashboardQuickComposerBar: View {
     }
 
     private func focusIfRequested() {
-        guard focusRequestID > 0 else { return }
+        guard focusRequestID > 0, focusRequestID != handledFocusRequestID else { return }
+        let requestID = focusRequestID
+        let generation = focusDismissalGeneration
+        handledFocusRequestID = requestID
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            guard handledFocusRequestID == requestID,
+                  focusDismissalGeneration == generation
+            else { return }
             isComposerFocused = true
         }
     }
