@@ -266,6 +266,70 @@ jobs:
             -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             OTHER_CODE_SIGN_FLAGS="--keychain $SIGNING_KEYCHAIN_PATH"
 
+          ipa_path="$(find "$RUNNER_TEMP/export" -maxdepth 1 -name "*.ipa" -print -quit)"
+          if [ -z "$ipa_path" ]; then
+            echo "::error::No IPA was exported"
+            exit 1
+          fi
+
+          resign_dir="$RUNNER_TEMP/resign"
+          rm -rf "$resign_dir"
+          mkdir -p "$resign_dir"
+          unzip -q "$ipa_path" -d "$resign_dir"
+
+          app_path="$resign_dir/Payload/Macrodex.app"
+          profile_plist="$resign_dir/app-profile.plist"
+          app_entitlements="$resign_dir/app-entitlements.plist"
+          security cms -D -i "$app_path/embedded.mobileprovision" > "$profile_plist"
+          /usr/libexec/PlistBuddy -x -c 'Print :Entitlements' "$profile_plist" > "$app_entitlements"
+
+          signing_identity="${IOS_CODE_SIGN_IDENTITY:-iPhone Distribution}"
+          codesign --force \
+            --sign "$signing_identity" \
+            --keychain "$SIGNING_KEYCHAIN_PATH" \
+            --entitlements "$app_entitlements" \
+            "$app_path"
+
+          rm -f "$ipa_path"
+          (cd "$resign_dir" && /usr/bin/zip -qry "$ipa_path" Payload)
+
+      - name: Verify exported IPA entitlements
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+
+          ipa_path="$(find "$RUNNER_TEMP/export" -maxdepth 1 -name "*.ipa" -print -quit)"
+          if [ -z "$ipa_path" ]; then
+            echo "::error::No IPA was exported"
+            exit 1
+          fi
+
+          verify_dir="$RUNNER_TEMP/verify-entitlements"
+          rm -rf "$verify_dir"
+          mkdir -p "$verify_dir"
+          unzip -q "$ipa_path" -d "$verify_dir"
+
+          app_path="$verify_dir/Payload/Macrodex.app"
+          entitlements="$verify_dir/Macrodex.entitlements.plist"
+          codesign -d --entitlements :- "$app_path" 2>/dev/null > "$entitlements"
+
+          healthkit="$(
+            /usr/libexec/PlistBuddy -c 'Print :com.apple.developer.healthkit' "$entitlements" 2>/dev/null || true
+          )"
+          if [ "$healthkit" != "true" ]; then
+            echo "::error::Exported IPA is missing com.apple.developer.healthkit in the signed app entitlements"
+            /usr/bin/plutil -p "$entitlements" || true
+            exit 1
+          fi
+
+          if ! /usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups' "$entitlements" 2>/dev/null | grep -Fq 'group.com.dj.macrodex'; then
+            echo "::error::Exported IPA is missing group.com.dj.macrodex in the signed app entitlements"
+            /usr/bin/plutil -p "$entitlements" || true
+            exit 1
+          fi
+
+          echo "Verified exported IPA entitlements include HealthKit and group.com.dj.macrodex."
+
       - name: Install App Store Connect CLI
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
