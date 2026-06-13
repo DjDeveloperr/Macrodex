@@ -449,6 +449,11 @@ private extension AppThreadSnapshot {
 }
 
 private struct ConversationBottomChrome: View {
+    private enum Metrics {
+        static let keyboardAttachedBottomPadding: CGFloat = 2
+        static let restingBottomPadding: CGFloat = 32
+    }
+
     let pinnedContextItems: [ConversationItem]
     let composer: ConversationComposerSnapshot
     let onSend: (String, [UIImage], [SkillMentionSelection]) -> Void
@@ -460,6 +465,20 @@ private struct ConversationBottomChrome: View {
     let onOpenConversation: ((ThreadKey) -> Void)?
     let onResumeSessions: ((String) -> Void)?
     @State private var keyboardVisible = false
+    @State private var keyboardTop: CGFloat?
+    @State private var viewportMaxY: CGFloat = UIScreen.main.bounds.maxY
+
+    private var composerBottomPadding: CGFloat {
+        guard keyboardVisible, let keyboardTop else {
+            return Metrics.restingBottomPadding
+        }
+
+        let restingComposerBottom = viewportMaxY - max(bottomInset, 0) - Metrics.restingBottomPadding
+        return max(
+            Metrics.keyboardAttachedBottomPadding,
+            keyboardTop - restingComposerBottom
+        )
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -481,13 +500,35 @@ private struct ConversationBottomChrome: View {
             )
             .background(.clear, ignoresSafeAreaEdges: .bottom)
         }
-        .padding(.bottom, keyboardVisible ? 2 : 32)
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
-            keyboardVisible = true
+        .padding(.bottom, composerBottomPadding)
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { notification in
+            updateKeyboardFrame(from: notification)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
+            updateKeyboardFrame(from: notification)
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             keyboardVisible = false
+            keyboardTop = nil
         }
+    }
+
+    private func updateKeyboardFrame(from notification: Notification) {
+        guard let endFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
+              let window = UIApplication.shared.connectedScenes
+                  .compactMap({ $0 as? UIWindowScene })
+                  .flatMap(\.windows)
+                  .first(where: \.isKeyWindow)
+        else {
+            keyboardVisible = true
+            keyboardTop = nil
+            return
+        }
+
+        let keyboardFrame = window.convert(endFrame, from: nil)
+        viewportMaxY = window.bounds.maxY
+        keyboardTop = keyboardFrame.minY
+        keyboardVisible = keyboardFrame.minY < window.bounds.maxY - 1
     }
 }
 

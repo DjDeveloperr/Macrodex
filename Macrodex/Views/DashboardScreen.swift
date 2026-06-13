@@ -901,9 +901,13 @@ struct DashboardScreen: View {
                 .foregroundStyle(DashboardTone.textPrimary)
         }
         .simultaneousGesture(TapGesture().onEnded {
-            NotificationCenter.default.post(name: .dashboardComposerWillOpenModelMenu, object: nil)
+            primeDashboardModelMenuInteraction()
         })
         .accessibilityLabel("Model settings")
+    }
+
+    private func primeDashboardModelMenuInteraction() {
+        NotificationCenter.default.post(name: .dashboardComposerWillOpenModelMenu, object: nil)
     }
 
     private func refocusDashboardComposerAfterModelMenuSelection() {
@@ -5745,6 +5749,7 @@ private struct LibraryToolbarButton: View {
             Image(systemName: systemName)
                 .font(.system(size: 17, weight: .semibold))
         }
+        .buttonStyle(.plain)
         .accessibilityLabel(label)
     }
 }

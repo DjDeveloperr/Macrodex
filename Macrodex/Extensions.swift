@@ -289,7 +289,14 @@ struct KeyboardDismissTapInstaller: UIViewRepresentable {
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
             guard let view = touch.view else { return true }
-            return !view.macrodexIsTextInputDescendant
+            return !view.macrodexSuppressesKeyboardDismissTap
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            true
         }
     }
 }
@@ -306,10 +313,20 @@ extension Notification.Name {
 }
 
 private extension UIView {
-    var macrodexIsTextInputDescendant: Bool {
+    var macrodexSuppressesKeyboardDismissTap: Bool {
         var view: UIView? = self
         while let current = view {
             if current is UITextField || current is UITextView {
+                return true
+            }
+            if current is UIControl || current is UINavigationBar || current is UIToolbar {
+                return true
+            }
+            if current.accessibilityTraits.contains(.button) {
+                return true
+            }
+            let className = NSStringFromClass(type(of: current))
+            if className.contains("Button") || className.contains("BarButton") || className.contains("Menu") {
                 return true
             }
             view = current.superview
