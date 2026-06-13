@@ -1681,6 +1681,7 @@ struct DashboardQuickComposerBar: View {
     @State private var keyboardVisible = false
     @State private var keyboardTop: CGFloat?
     @State private var composerFrame: CGRect = .zero
+    @State private var restingComposerMaxY: CGFloat?
     @State private var composerContentHeight: CGFloat = 56
     @State private var keyboardLift: CGFloat = 0
     @State private var isFoodSearchMode = false
@@ -1859,6 +1860,9 @@ struct DashboardQuickComposerBar: View {
         .scaleEffect(1 + (0.012 * clampedPullRevealProgress), anchor: .bottom)
         .onPreferenceChange(DashboardComposerFramePreferenceKey.self) { frame in
             composerFrame = frame
+            if !keyboardVisible, clampedPullRevealProgress <= 0.001, frame != .zero {
+                restingComposerMaxY = frame.maxY
+            }
             updateKeyboardLift(notification: nil)
         }
         .onPreferenceChange(ConversationComposerContentHeightPreferenceKey.self) { height in
@@ -1949,10 +1953,9 @@ struct DashboardQuickComposerBar: View {
         }
 
         let desiredGap: CGFloat = 5
-        let measuredFrameMaxY = composerFrame == .zero
+        let frameMaxY = restingComposerMaxY ?? (composerFrame == .zero
             ? UIScreen.main.bounds.maxY - max(bottomInset, 0) - composerBottomPadding
-            : composerFrame.maxY
-        let frameMaxY = keyboardVisible ? measuredFrameMaxY + keyboardLift : measuredFrameMaxY
+            : composerFrame.maxY)
         let lift = max(0, frameMaxY + desiredGap - keyboardTop)
         setKeyboardLift(lift, notification: notification)
     }

@@ -34,7 +34,7 @@ struct DatabaseBackupsView: View {
                 restoreTarget = nil
             }
         } message: {
-            Text("Macrodex will create a safety backup first, then replace the current database.")
+            Text("Macrodex will create a safety backup first, then replace the current database with the selected local or iCloud backup.")
         }
         .confirmationDialog("Delete backup?", isPresented: deleteBinding, titleVisibility: .visible) {
             Button("Delete Backup", role: .destructive) {
@@ -44,7 +44,7 @@ struct DatabaseBackupsView: View {
                 deleteTarget = nil
             }
         } message: {
-            Text("This removes the local backup files for the selected point in time.")
+            Text("This removes the backup files for the selected point in time from this device and iCloud when available.")
         }
         .confirmationDialog("Reset database?", isPresented: $showResetConfirmation, titleVisibility: .visible) {
             Button("Reset Database", role: .destructive) {
@@ -59,7 +59,8 @@ struct DatabaseBackupsView: View {
     private var statusSection: some View {
         Section {
             SettingsInfoRow(title: "Last Backup", value: lastBackupText, systemImage: "clock.arrow.circlepath")
-            SettingsInfoRow(title: "Storage Used", value: ByteCountFormatter.string(fromByteCount: overview.storageBytes, countStyle: .file), systemImage: "externaldrive")
+            SettingsInfoRow(title: "Local Storage", value: ByteCountFormatter.string(fromByteCount: overview.storageBytes, countStyle: .file), systemImage: "externaldrive")
+            SettingsInfoRow(title: "iCloud", value: overview.cloudStatus, systemImage: "icloud")
             SettingsInfoRow(title: "Status", value: overview.status, systemImage: "checkmark.circle")
 
             Toggle(isOn: automaticBinding) {
@@ -69,6 +70,21 @@ struct DatabaseBackupsView: View {
             }
             .tint(MacrodexTheme.accent)
             .listRowBackground(MacrodexTheme.surface.opacity(0.6))
+
+            if overview.cloudBackupsAvailable {
+                Toggle(isOn: cloudBinding) {
+                    Label("iCloud Backups", systemImage: "icloud.and.arrow.up")
+                        .macrodexFont(.subheadline)
+                        .foregroundColor(MacrodexTheme.textPrimary)
+                }
+                .tint(MacrodexTheme.accent)
+                .listRowBackground(MacrodexTheme.surface.opacity(0.6))
+            } else {
+                Text("This build or iCloud account cannot access a Macrodex iCloud backup container. Local backups are removed if the app is deleted.")
+                    .macrodexFont(.caption)
+                    .foregroundColor(MacrodexTheme.textSecondary)
+                    .listRowBackground(MacrodexTheme.surface.opacity(0.6))
+            }
 
         } header: {
             Text("Database")
@@ -93,6 +109,16 @@ struct DatabaseBackupsView: View {
             }
             .disabled(isWorking)
             .listRowBackground(MacrodexTheme.surface.opacity(0.6))
+
+            if overview.cloudBackupsAvailable {
+                Button {
+                    Task { await uploadLocalBackups() }
+                } label: {
+                    actionLabel("Upload Local Backups to iCloud", systemImage: "icloud.and.arrow.up")
+                }
+                .disabled(isWorking || overview.backups.isEmpty)
+                .listRowBackground(MacrodexTheme.surface.opacity(0.6))
+            }
 
             Button(role: .destructive) {
                 showResetConfirmation = true
@@ -129,7 +155,7 @@ struct DatabaseBackupsView: View {
     private var backupsSection: some View {
         Section {
             if overview.backups.isEmpty {
-                Text("No backups yet.")
+                Text("No backups found on this device or iCloud.")
                     .macrodexFont(.caption)
                     .foregroundColor(MacrodexTheme.textMuted)
                     .listRowBackground(MacrodexTheme.surface.opacity(0.6))
@@ -203,6 +229,21 @@ struct DatabaseBackupsView: View {
         }
     }
 
+    private var cloudBinding: Binding<Bool> {
+        Binding {
+            overview.cloudBackupsEnabled
+        } set: { value in
+            overview.cloudBackupsEnabled = value
+            Task {
+                await DatabaseBackupManager.shared.setCloudBackupsEnabled(value)
+                if value {
+                    try? await DatabaseBackupManager.shared.uploadPendingBackups()
+                }
+                await refresh()
+            }
+        }
+    }
+
     private var restoreBinding: Binding<Bool> {
         Binding {
             restoreTarget != nil
@@ -222,7 +263,8 @@ struct DatabaseBackupsView: View {
     private func backupSubtitle(_ backup: DatabaseBackupSummary) -> String {
         let size = ByteCountFormatter.string(fromByteCount: backup.totalByteCount, countStyle: .file)
         let deltaText = backup.deltas.isEmpty ? "base only" : "\(backup.deltas.count) incremental"
-        return "\(size) - \(deltaText) - local"
+        let location = backup.cloudUploadedAt == nil ? "local only" : "iCloud"
+        return "\(size) - \(deltaText) - \(location)"
     }
 
     private func refresh() async {
@@ -253,6 +295,13 @@ struct DatabaseBackupsView: View {
         await run {
             let backup = try await DatabaseBackupManager.shared.createIncrementalBackup(reason: "Manual incremental")
             return "Saved backup chain with \(backup.deltas.count) incremental file(s)."
+        }
+    }
+
+    private func uploadLocalBackups() async {
+        await run {
+            try await DatabaseBackupManager.shared.uploadPendingBackups()
+            return "Uploaded local backups to iCloud."
         }
     }
 

@@ -151,10 +151,10 @@ struct DrawerSettingsView: View {
                         .foregroundColor(MacrodexTheme.textPrimary)
                         .frame(width: 22)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("Backups & iCloud")
+                        Text("Backups")
                             .macrodexFont(.subheadline, weight: .semibold)
                             .foregroundColor(MacrodexTheme.textPrimary)
-                        Text("Create, restore, reset, and upload database backups.")
+                        Text("Create, restore, reset, and use iCloud only when available.")
                             .macrodexFont(.caption)
                             .foregroundColor(MacrodexTheme.textSecondary)
                     }

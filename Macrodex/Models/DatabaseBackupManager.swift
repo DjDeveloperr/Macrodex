@@ -46,6 +46,8 @@ struct DatabaseBackupOverview: Equatable {
     var backups: [DatabaseBackupSummary] = []
     var automaticBackupsEnabled: Bool = true
     var cloudBackupsEnabled: Bool = false
+    var cloudBackupsAvailable: Bool = false
+    var cloudStatus: String = "iCloud unavailable"
     var lastBackupDate: Date?
     var storageBytes: Int64 = 0
     var status: String = "Ready"
@@ -73,6 +75,19 @@ enum DatabaseBackupError: LocalizedError {
 
 actor DatabaseBackupManager {
     static let shared = DatabaseBackupManager()
+
+    private struct BackupStorage {
+        var backupDirectory: URL
+        var baseDirectory: URL
+        var deltaDirectory: URL
+        var indexURL: URL
+        var isCloud: Bool
+    }
+
+    private struct BackupLocation {
+        var summary: DatabaseBackupSummary
+        var storage: BackupStorage
+    }
 
     private let fileManager = FileManager.default
     private let encoder: JSONEncoder
@@ -117,13 +132,48 @@ actor DatabaseBackupManager {
     }
 
     private var automaticDefaultsKey: String { "databaseBackups.automaticEnabled" }
+    private var cloudDefaultsKey: String { "databaseBackups.cloudEnabled" }
+    private var cloudDirectoryName: String { "MacrodexDatabaseBackups" }
+
+    private var localStorage: BackupStorage {
+        BackupStorage(
+            backupDirectory: backupDirectory,
+            baseDirectory: baseDirectory,
+            deltaDirectory: deltaDirectory,
+            indexURL: indexURL,
+            isCloud: false
+        )
+    }
+
+    private func cloudStorage() -> BackupStorage? {
+        guard let ubiquityURL = fileManager.url(forUbiquityContainerIdentifier: nil) else {
+            return nil
+        }
+        let backupDirectory = ubiquityURL
+            .appendingPathComponent("Documents", isDirectory: true)
+            .appendingPathComponent(cloudDirectoryName, isDirectory: true)
+        return BackupStorage(
+            backupDirectory: backupDirectory,
+            baseDirectory: backupDirectory.appendingPathComponent("base", isDirectory: true),
+            deltaDirectory: backupDirectory.appendingPathComponent("deltas", isDirectory: true),
+            indexURL: backupDirectory.appendingPathComponent("backup-index.json"),
+            isCloud: true
+        )
+    }
+
     func overview() async -> DatabaseBackupOverview {
         do {
-            let backups = try loadIndex()
+            let localBackups = try loadIndex()
+            let cloud = cloudStorage()
+            let cloudBackups = try loadCloudIndex(from: cloud)
+            let backups = mergedBackups(local: localBackups, cloud: cloudBackups)
+            let cloudAvailable = cloud != nil
             return DatabaseBackupOverview(
                 backups: backups.sorted { $0.createdAt > $1.createdAt },
                 automaticBackupsEnabled: automaticBackupsEnabled,
-                cloudBackupsEnabled: cloudBackupsEnabled,
+                cloudBackupsEnabled: cloudAvailable && cloudBackupsEnabled,
+                cloudBackupsAvailable: cloudAvailable,
+                cloudStatus: cloudStatus(available: cloudAvailable, cloudBackups: cloudBackups),
                 lastBackupDate: backups.map(\.createdAt).max(),
                 storageBytes: storageBytes(),
                 status: "Ready"
@@ -142,8 +192,11 @@ actor DatabaseBackupManager {
     }
 
     var cloudBackupsEnabled: Bool {
-        get { false }
-        set {}
+        get {
+            if defaults.object(forKey: cloudDefaultsKey) == nil { return true }
+            return defaults.bool(forKey: cloudDefaultsKey)
+        }
+        set { defaults.set(newValue, forKey: cloudDefaultsKey) }
     }
 
     func setAutomaticBackupsEnabled(_ enabled: Bool) {
@@ -151,7 +204,7 @@ actor DatabaseBackupManager {
     }
 
     func setCloudBackupsEnabled(_ enabled: Bool) {
-        cloudBackupsEnabled = false
+        cloudBackupsEnabled = enabled
     }
 
     func configureIfNeeded() async {
@@ -161,6 +214,9 @@ actor DatabaseBackupManager {
             try installChangeLogging()
             if automaticBackupsEnabled {
                 try await createBackupIfNeeded(reason: "Launch", minimumInterval: 24 * 60 * 60)
+            }
+            if cloudBackupsEnabled {
+                try? await uploadPendingBackups()
             }
         } catch {
             LLog.warn("backup", "backup configuration failed", fields: ["error": error.localizedDescription])
@@ -211,6 +267,9 @@ actor DatabaseBackupManager {
         backups.append(summary)
         backups = prune(backups)
         try saveIndex(backups)
+        if cloudBackupsEnabled {
+            try? await uploadPendingBackups()
+        }
         return summary
     }
 
@@ -262,6 +321,9 @@ actor DatabaseBackupManager {
         if latest.deltas.count >= 24 || latest.totalByteCount > 8_000_000 {
             return try await createBackup(reason: "Compacted")
         }
+        if cloudBackupsEnabled {
+            try? await uploadPendingBackups()
+        }
         return latest
     }
 
@@ -276,7 +338,9 @@ actor DatabaseBackupManager {
 
     func deleteBackup(id: DatabaseBackupSummary.ID) async throws {
         var backups = try loadIndex()
-        guard let backup = backups.first(where: { $0.id == id }) else {
+        let cloud = cloudStorage()
+        let cloudBackups = try loadCloudIndex(from: cloud)
+        guard let backup = backups.first(where: { $0.id == id }) ?? cloudBackups.first(where: { $0.id == id }) else {
             throw DatabaseBackupError.missingBackup
         }
         try? fileManager.removeItem(at: baseDirectory.appendingPathComponent(backup.baseFileName))
@@ -285,6 +349,16 @@ actor DatabaseBackupManager {
         }
         backups.removeAll { $0.id == id }
         try saveIndex(backups)
+
+        if let cloud {
+            try? fileManager.removeItem(at: cloud.baseDirectory.appendingPathComponent(backup.baseFileName))
+            for delta in backup.deltas {
+                try? fileManager.removeItem(at: cloud.deltaDirectory.appendingPathComponent(delta.fileName))
+            }
+            var updatedCloudBackups = cloudBackups
+            updatedCloudBackups.removeAll { $0.id == id }
+            try saveIndex(updatedCloudBackups, to: cloud.indexURL)
+        }
     }
 
     func resetDatabase() async throws -> DatabaseBackupSummary {
@@ -299,20 +373,25 @@ actor DatabaseBackupManager {
     }
 
     func restoreBackup(id: DatabaseBackupSummary.ID) async throws {
-        let backups = try loadIndex()
-        guard let backup = backups.first(where: { $0.id == id }) else {
-            throw DatabaseBackupError.missingBackup
+        let location = try backupLocation(id: id)
+        let backup = location.summary
+        try prepareDirectories()
+        if fileManager.fileExists(atPath: databaseURL.path) {
+            _ = try await createBackup(reason: "Before restore")
         }
-        _ = try await createBackup(reason: "Before restore")
 
         let restoreURL = backupDirectory
             .appendingPathComponent("restore-\(timestamp(Date())).sqlite")
         try? fileManager.removeItem(at: restoreURL)
+        let baseURL = location.storage.baseDirectory.appendingPathComponent(backup.baseFileName)
+        if location.storage.isCloud {
+            try ensureCloudFileAvailable(baseURL)
+        }
         try fileManager.copyItem(
-            at: baseDirectory.appendingPathComponent(backup.baseFileName),
+            at: baseURL,
             to: restoreURL
         )
-        try replayDeltas(backup.deltas, into: restoreURL)
+        try replayDeltas(backup.deltas, from: location.storage, into: restoreURL)
         try validateDatabase(at: restoreURL)
 
         let oldURL = codexDirectory
@@ -325,25 +404,70 @@ actor DatabaseBackupManager {
     }
 
     func uploadPendingBackups() async throws {
-        throw DatabaseBackupError.cloudUnavailable
+        guard let cloud = cloudStorage() else {
+            throw DatabaseBackupError.cloudUnavailable
+        }
+        try prepareDirectories()
+        try prepareDirectories(for: cloud)
+
+        var localBackups = try loadIndex()
+        guard !localBackups.isEmpty else { return }
+        var cloudBackups = try loadIndex(from: cloud.indexURL)
+        let uploadDate = Date()
+
+        for local in localBackups {
+            try copyBackupFiles(for: local, from: localStorage, to: cloud)
+            var uploaded = local
+            uploaded.cloudUploadedAt = local.cloudUploadedAt ?? uploadDate
+            uploaded.deltas = uploaded.deltas.map { delta in
+                var copy = delta
+                copy.cloudUploadedAt = delta.cloudUploadedAt ?? uploadDate
+                return copy
+            }
+            cloudBackups.removeAll { $0.id == uploaded.id }
+            cloudBackups.append(uploaded)
+
+            if let index = localBackups.firstIndex(where: { $0.id == local.id }) {
+                localBackups[index] = uploaded
+            }
+        }
+
+        cloudBackups = pruneCloud(cloudBackups, storage: cloud)
+        try saveIndex(cloudBackups, to: cloud.indexURL)
+        try saveIndex(localBackups)
     }
 
     private func prepareDirectories() throws {
-        try fileManager.createDirectory(at: codexDirectory, withIntermediateDirectories: true)
-        try fileManager.createDirectory(at: backupDirectory, withIntermediateDirectories: true)
-        try fileManager.createDirectory(at: baseDirectory, withIntermediateDirectories: true)
-        try fileManager.createDirectory(at: deltaDirectory, withIntermediateDirectories: true)
+        try prepareDirectories(for: localStorage)
+    }
+
+    private func prepareDirectories(for storage: BackupStorage) throws {
+        if !storage.isCloud {
+            try fileManager.createDirectory(at: codexDirectory, withIntermediateDirectories: true)
+        }
+        try fileManager.createDirectory(at: storage.backupDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: storage.baseDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: storage.deltaDirectory, withIntermediateDirectories: true)
     }
 
     private func loadIndex() throws -> [DatabaseBackupSummary] {
-        guard fileManager.fileExists(atPath: indexURL.path) else { return [] }
-        let data = try Data(contentsOf: indexURL)
+        try loadIndex(from: indexURL)
+    }
+
+    private func loadIndex(from url: URL) throws -> [DatabaseBackupSummary] {
+        guard fileManager.fileExists(atPath: url.path) else { return [] }
+        try ensureCloudFileAvailable(url)
+        let data = try Data(contentsOf: url)
         return try decoder.decode([DatabaseBackupSummary].self, from: data)
     }
 
     private func saveIndex(_ backups: [DatabaseBackupSummary]) throws {
+        try saveIndex(backups, to: indexURL)
+    }
+
+    private func saveIndex(_ backups: [DatabaseBackupSummary], to url: URL) throws {
         let data = try encoder.encode(backups.sorted { $0.createdAt < $1.createdAt })
-        try data.write(to: indexURL, options: [.atomic])
+        try data.write(to: url, options: [.atomic])
     }
 
     private func prune(_ backups: [DatabaseBackupSummary]) -> [DatabaseBackupSummary] {
@@ -357,6 +481,158 @@ actor DatabaseBackupManager {
             }
         }
         return retained
+    }
+
+    private func pruneCloud(_ backups: [DatabaseBackupSummary], storage: BackupStorage) -> [DatabaseBackupSummary] {
+        let sorted = backups.sorted { $0.createdAt > $1.createdAt }
+        let retained = Array(sorted.prefix(14))
+        let retainedIDs = Set(retained.map(\.id))
+        for backup in sorted where !retainedIDs.contains(backup.id) {
+            try? fileManager.removeItem(at: storage.baseDirectory.appendingPathComponent(backup.baseFileName))
+            for delta in backup.deltas {
+                try? fileManager.removeItem(at: storage.deltaDirectory.appendingPathComponent(delta.fileName))
+            }
+        }
+        return retained
+    }
+
+    private func loadCloudIndex(from storage: BackupStorage?) throws -> [DatabaseBackupSummary] {
+        guard let storage else { return [] }
+        return try loadIndex(from: storage.indexURL)
+    }
+
+    private func mergedBackups(
+        local localBackups: [DatabaseBackupSummary],
+        cloud cloudBackups: [DatabaseBackupSummary]
+    ) -> [DatabaseBackupSummary] {
+        var merged: [UUID: DatabaseBackupSummary] = [:]
+        for backup in localBackups {
+            merged[backup.id] = backup
+        }
+        for cloudBackup in cloudBackups {
+            if var existing = merged[cloudBackup.id] {
+                existing.cloudRecordName = existing.cloudRecordName ?? cloudBackup.cloudRecordName
+                existing.cloudUploadedAt = existing.cloudUploadedAt ?? cloudBackup.cloudUploadedAt ?? cloudBackup.createdAt
+                existing.deltas = mergeDeltas(local: existing.deltas, cloud: cloudBackup.deltas)
+                merged[cloudBackup.id] = existing
+            } else {
+                var backup = cloudBackup
+                backup.cloudUploadedAt = backup.cloudUploadedAt ?? backup.createdAt
+                backup.deltas = backup.deltas.map { delta in
+                    var copy = delta
+                    copy.cloudUploadedAt = copy.cloudUploadedAt ?? copy.createdAt
+                    return copy
+                }
+                merged[backup.id] = backup
+            }
+        }
+        return Array(merged.values)
+    }
+
+    private func mergeDeltas(
+        local localDeltas: [DatabaseBackupSummary.Delta],
+        cloud cloudDeltas: [DatabaseBackupSummary.Delta]
+    ) -> [DatabaseBackupSummary.Delta] {
+        var merged: [String: DatabaseBackupSummary.Delta] = [:]
+        for delta in localDeltas {
+            merged[delta.fileName] = delta
+        }
+        for cloudDelta in cloudDeltas {
+            if var existing = merged[cloudDelta.fileName] {
+                existing.cloudUploadedAt = existing.cloudUploadedAt ?? cloudDelta.cloudUploadedAt ?? cloudDelta.createdAt
+                merged[cloudDelta.fileName] = existing
+            } else {
+                var delta = cloudDelta
+                delta.cloudUploadedAt = delta.cloudUploadedAt ?? delta.createdAt
+                merged[delta.fileName] = delta
+            }
+        }
+        return Array(merged.values).sorted { $0.fromSequence < $1.fromSequence }
+    }
+
+    private func cloudStatus(available: Bool, cloudBackups: [DatabaseBackupSummary]) -> String {
+        guard available else {
+            return "Unavailable in this build or iCloud account"
+        }
+        guard cloudBackupsEnabled else {
+            return "Off"
+        }
+        if cloudBackups.isEmpty {
+            return "On, no cloud backups yet"
+        }
+        let count = cloudBackups.count
+        return "On, \(count) cloud backup\(count == 1 ? "" : "s")"
+    }
+
+    private func backupLocation(id: DatabaseBackupSummary.ID) throws -> BackupLocation {
+        let localBackups = try loadIndex()
+        if let backup = localBackups.first(where: { $0.id == id }),
+           fileManager.fileExists(atPath: localStorage.baseDirectory.appendingPathComponent(backup.baseFileName).path) {
+            return BackupLocation(summary: backup, storage: localStorage)
+        }
+
+        if let cloud = cloudStorage() {
+            let cloudBackups = try loadCloudIndex(from: cloud)
+            if let backup = cloudBackups.first(where: { $0.id == id }) {
+                return BackupLocation(summary: backup, storage: cloud)
+            }
+        }
+
+        if let backup = localBackups.first(where: { $0.id == id }) {
+            return BackupLocation(summary: backup, storage: localStorage)
+        }
+
+        throw DatabaseBackupError.missingBackup
+    }
+
+    private func copyBackupFiles(
+        for backup: DatabaseBackupSummary,
+        from source: BackupStorage,
+        to destination: BackupStorage
+    ) throws {
+        let sourceBase = source.baseDirectory.appendingPathComponent(backup.baseFileName)
+        let destinationBase = destination.baseDirectory.appendingPathComponent(backup.baseFileName)
+        try copyBackupFileIfNeeded(from: sourceBase, to: destinationBase, checksum: backup.baseChecksum)
+
+        for delta in backup.deltas {
+            let sourceDelta = source.deltaDirectory.appendingPathComponent(delta.fileName)
+            let destinationDelta = destination.deltaDirectory.appendingPathComponent(delta.fileName)
+            try copyBackupFileIfNeeded(from: sourceDelta, to: destinationDelta, checksum: delta.checksum)
+        }
+    }
+
+    private func copyBackupFileIfNeeded(from source: URL, to destination: URL, checksum expectedChecksum: String) throws {
+        guard fileManager.fileExists(atPath: source.path) else {
+            throw DatabaseBackupError.missingBackup
+        }
+        if fileManager.fileExists(atPath: destination.path),
+           (try? checksum(of: destination)) == expectedChecksum {
+            return
+        }
+        try? fileManager.removeItem(at: destination)
+        try fileManager.copyItem(at: source, to: destination)
+    }
+
+    private func ensureCloudFileAvailable(_ url: URL) throws {
+        guard fileManager.fileExists(atPath: url.path) else { return }
+        let values = try? url.resourceValues(forKeys: [
+            .isUbiquitousItemKey,
+            .ubiquitousItemDownloadingStatusKey
+        ])
+        guard values?.isUbiquitousItem == true else { return }
+        if values?.ubiquitousItemDownloadingStatus == .current {
+            return
+        }
+
+        try fileManager.startDownloadingUbiquitousItem(at: url)
+        let deadline = Date().addingTimeInterval(30)
+        while Date() < deadline {
+            let currentValues = try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
+            if currentValues?.ubiquitousItemDownloadingStatus == .current {
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.15)
+        }
     }
 
     private func storageBytes() -> Int64 {
@@ -471,14 +747,17 @@ actor DatabaseBackupManager {
         """)
     }
 
-    private func replayDeltas(_ deltas: [DatabaseBackupSummary.Delta], into database: URL) throws {
+    private func replayDeltas(_ deltas: [DatabaseBackupSummary.Delta], from storage: BackupStorage, into database: URL) throws {
         guard !deltas.isEmpty else { return }
         try withDatabase(at: database) { db in
             try exec(db, "BEGIN IMMEDIATE;")
             do {
                 for delta in deltas.sorted(by: { $0.fromSequence < $1.fromSequence }) {
-                    let url = deltaDirectory.appendingPathComponent(delta.fileName)
+                    let url = storage.deltaDirectory.appendingPathComponent(delta.fileName)
                     guard fileManager.fileExists(atPath: url.path) else { continue }
+                    if storage.isCloud {
+                        try ensureCloudFileAvailable(url)
+                    }
                     let lines = try String(contentsOf: url, encoding: .utf8)
                         .split(separator: "\n")
                     for line in lines {

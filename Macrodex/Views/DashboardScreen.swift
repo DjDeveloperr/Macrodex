@@ -783,7 +783,6 @@ struct DashboardScreen: View {
 
     private func updateDashboardComposerPull(translation: CGFloat) {
         guard canInteractivelyRevealDashboardComposer,
-              dashboardScrollTopOffset > -6,
               translation > 0
         else {
             if dashboardComposerPullProgress > 0 {
@@ -792,8 +791,15 @@ struct DashboardScreen: View {
             return
         }
 
-        let pull = max(translation, dashboardScrollTopOffset)
-        let progress = min(max((pull - Self.dashboardPullDeadZone) / Self.dashboardPullRevealDistance, 0), 1)
+        let overscroll = max(dashboardScrollTopOffset, 0)
+        guard overscroll > 0 else {
+            if dashboardComposerPullProgress > 0 {
+                dashboardComposerPullProgress = 0
+            }
+            return
+        }
+
+        let progress = min(max((overscroll - Self.dashboardPullDeadZone) / Self.dashboardPullRevealDistance, 0), 1)
         dashboardComposerPullProgress = progress
         if progress > 0.01 {
             showDashboardModelSelector = false
@@ -803,23 +809,16 @@ struct DashboardScreen: View {
     private func finishDashboardComposerPull(translation: CGFloat, predictedTranslation: CGFloat) {
         guard dashboardComposerPullProgress > 0 else { return }
 
-        let predicted = max(translation, predictedTranslation)
+        let predicted = max(dashboardScrollTopOffset, predictedTranslation - translation + dashboardScrollTopOffset)
         let shouldOpen = canInteractivelyRevealDashboardComposer
-            && dashboardScrollTopOffset > -8
+            && dashboardScrollTopOffset > Self.dashboardPullDeadZone
             && (dashboardComposerPullProgress >= Self.dashboardPullCommitProgress
                 || predicted >= Self.dashboardPullCommitDistance)
 
         if shouldOpen {
             AppHaptics.medium()
-            withAnimation(.easeOut(duration: 0.12)) {
-                dashboardComposerPullProgress = 1
-            }
+            dashboardComposerPullProgress = 0
             NotificationCenter.default.post(name: .dashboardComposerShouldFocusKeyboard, object: nil)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
-                withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
-                    dashboardComposerPullProgress = 0
-                }
-            }
         } else {
             withAnimation(.spring(response: 0.34, dampingFraction: 0.9)) {
                 dashboardComposerPullProgress = 0
