@@ -70,7 +70,14 @@ struct DashboardScreen: View {
     @State private var dashboardMetricsRevealTask: Task<Void, Never>?
     @State private var keyboardOverlayProgress: CGFloat = 0
     @State private var dashboardComposerPullProgress: CGFloat = 0
-    @State private var dashboardScrollTopOffset: CGFloat = 0
+    @State private var dashboardTopOverscroll: CGFloat = 0
+    @State private var dashboardMaxPullOverscroll: CGFloat = 0
+    @State private var dashboardTopProbeRestingOffset: CGFloat?
+    @State private var dashboardCurrentTopProbeOffset: CGFloat = 0
+    @State private var dashboardScrollDistanceFromTop: CGFloat = 0
+    @State private var dashboardGesturePullActive = false
+    @State private var dashboardGestureStartedAtTop = false
+    @State private var dashboardScrollPhase: ScrollPhase = .idle
     @State private var dashboardSummary = ""
     @State private var dashboardSuggestions: [DashboardFoodSuggestion] = []
     @State private var dashboardComposerIsActive = false
@@ -114,7 +121,18 @@ struct DashboardScreen: View {
             }
             .coordinateSpace(name: Self.dashboardScrollCoordinateSpace)
             .onPreferenceChange(DashboardScrollTopOffsetPreferenceKey.self) { offset in
-                dashboardScrollTopOffset = offset
+                updateDashboardComposerPull(topProbeOffset: offset)
+            }
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                max(geometry.contentOffset.y + geometry.contentInsets.top, 0)
+            } action: { _, distanceFromTop in
+                dashboardScrollDistanceFromTop = distanceFromTop
+            }
+            .onScrollPhaseChange { _, newPhase in
+                dashboardScrollPhase = newPhase
+                if !newPhase.isScrolling {
+                    finishDashboardComposerPull()
+                }
             }
             .blur(radius: dashboardContentBlurRadius)
 
@@ -123,11 +141,6 @@ struct DashboardScreen: View {
         .ignoresSafeArea(.keyboard, edges: .bottom)
         .scrollDisabled(drawerController.progress > 0.001)
         .scrollDismissesKeyboard(.interactively)
-        .simultaneousGesture(
-            TapGesture().onEnded {
-                dismissKeyboard()
-            }
-        )
         .simultaneousGesture(dashboardComposerPullGesture)
         .onChange(of: drawerController.progress) { _, progress in
             if progress > 0.001 {
@@ -698,19 +711,6 @@ struct DashboardScreen: View {
         keyboardOverlayProgress > 0.001 || dashboardComposerIsActive
     }
 
-    private var dashboardComposerPullGesture: some Gesture {
-        DragGesture(minimumDistance: 8, coordinateSpace: .local)
-            .onChanged { value in
-                updateDashboardComposerPull(translation: value.translation.height)
-            }
-            .onEnded { value in
-                finishDashboardComposerPull(
-                    translation: value.translation.height,
-                    predictedTranslation: value.predictedEndTranslation.height
-                )
-            }
-    }
-
     @ViewBuilder
     private var dashboardScrollTopProbe: some View {
         Color.clear
@@ -725,46 +725,114 @@ struct DashboardScreen: View {
             )
     }
 
-    private func updateDashboardComposerPull(translation: CGFloat) {
-        guard canInteractivelyRevealDashboardComposer,
-              translation > 0
-        else {
+    private var dashboardComposerPullGesture: some Gesture {
+        DragGesture(minimumDistance: 8, coordinateSpace: .local)
+            .onChanged { value in
+                if !dashboardGesturePullActive {
+                    dashboardGesturePullActive = true
+                    dashboardGestureStartedAtTop = isDashboardAtTopForComposerPull
+                }
+                updateDashboardComposerPull(gestureTranslation: value.translation)
+            }
+            .onEnded { value in
+                updateDashboardComposerPull(gestureTranslation: value.translation)
+                dashboardGesturePullActive = false
+                dashboardGestureStartedAtTop = false
+                finishDashboardComposerPull()
+            }
+    }
+
+    private func updateDashboardComposerPull(overscroll: CGFloat) {
+        dashboardTopOverscroll = max(overscroll, 0)
+
+        guard canInteractivelyRevealDashboardComposer else {
+            resetDashboardComposerPull()
+            return
+        }
+
+        guard dashboardTopOverscroll > 0.5 else {
+            if dashboardScrollPhase == .tracking || dashboardScrollPhase == .interacting {
+                dashboardMaxPullOverscroll = 0
+            }
             if dashboardComposerPullProgress > 0 {
                 dashboardComposerPullProgress = 0
             }
             return
         }
 
-        let overscroll = max(dashboardScrollTopOffset, 0)
-        guard overscroll > 0 else {
-            if dashboardComposerPullProgress > 0 {
-                dashboardComposerPullProgress = 0
-            }
-            return
-        }
-
-        let progress = min(max((overscroll - Self.dashboardPullDeadZone) / Self.dashboardPullRevealDistance, 0), 1)
+        dashboardMaxPullOverscroll = max(dashboardMaxPullOverscroll, dashboardTopOverscroll)
+        let progress = dashboardComposerPullProgress(for: dashboardTopOverscroll)
         dashboardComposerPullProgress = progress
     }
 
-    private func finishDashboardComposerPull(translation: CGFloat, predictedTranslation: CGFloat) {
-        guard dashboardComposerPullProgress > 0 else { return }
+    private func updateDashboardComposerPull(topProbeOffset: CGFloat) {
+        dashboardCurrentTopProbeOffset = topProbeOffset
+        let isResting = !dashboardScrollPhase.isScrolling && dashboardComposerPullProgress <= 0.001
+        if dashboardTopProbeRestingOffset == nil {
+            dashboardTopProbeRestingOffset = topProbeOffset
+        } else if isResting, let restingOffset = dashboardTopProbeRestingOffset, topProbeOffset > restingOffset {
+            dashboardTopProbeRestingOffset = topProbeOffset
+        }
 
-        let predicted = max(dashboardScrollTopOffset, predictedTranslation - translation + dashboardScrollTopOffset)
+        guard !dashboardGesturePullActive else { return }
+
+        let restingOffset = dashboardTopProbeRestingOffset ?? topProbeOffset
+        updateDashboardComposerPull(overscroll: max(topProbeOffset - restingOffset, 0))
+    }
+
+    private func updateDashboardComposerPull(gestureTranslation: CGSize) {
+        let verticalPull = gestureTranslation.height
+        let horizontalTravel = abs(gestureTranslation.width)
+        guard verticalPull > 0,
+              verticalPull > horizontalTravel * 1.25,
+              dashboardGestureStartedAtTop
+        else {
+            if dashboardComposerPullProgress > 0 {
+                updateDashboardComposerPull(overscroll: 0)
+            }
+            return
+        }
+
+        updateDashboardComposerPull(overscroll: verticalPull)
+    }
+
+    private func finishDashboardComposerPull() {
+        let overscroll = max(dashboardTopOverscroll, dashboardMaxPullOverscroll)
+        let progress = max(dashboardComposerPullProgress, dashboardComposerPullProgress(for: overscroll))
+        guard progress > 0 else {
+            resetDashboardComposerPull()
+            return
+        }
         let shouldOpen = canInteractivelyRevealDashboardComposer
-            && dashboardScrollTopOffset > Self.dashboardPullDeadZone
-            && (dashboardComposerPullProgress >= Self.dashboardPullCommitProgress
-                || predicted >= Self.dashboardPullCommitDistance)
+            && overscroll > Self.dashboardPullDeadZone
+            && (progress >= Self.dashboardPullCommitProgress
+                || overscroll >= Self.dashboardPullCommitDistance)
 
         if shouldOpen {
             AppHaptics.medium()
-            dashboardComposerPullProgress = 0
+            resetDashboardComposerPull()
             NotificationCenter.default.post(name: .dashboardComposerShouldFocusKeyboard, object: nil)
         } else {
             withAnimation(.spring(response: 0.34, dampingFraction: 0.9)) {
-                dashboardComposerPullProgress = 0
+                resetDashboardComposerPull()
             }
         }
+    }
+
+    private func dashboardComposerPullProgress(for overscroll: CGFloat) -> CGFloat {
+        min(max((overscroll - Self.dashboardPullDeadZone) / Self.dashboardPullRevealDistance, 0), 1)
+    }
+
+    private func resetDashboardComposerPull() {
+        dashboardComposerPullProgress = 0
+        dashboardTopOverscroll = 0
+        dashboardMaxPullOverscroll = 0
+    }
+
+    private var isDashboardAtTopForComposerPull: Bool {
+        let restingOffset = dashboardTopProbeRestingOffset ?? dashboardCurrentTopProbeOffset
+        return dashboardScrollDistanceFromTop <= 1.5
+            && dashboardCurrentTopProbeOffset >= restingOffset - 1
     }
 
     private var canInteractivelyRevealDashboardComposer: Bool {
@@ -6508,6 +6576,11 @@ private struct HealthKitNutritionDayBreakdown: Equatable {
     }
 }
 
+private struct HealthKitNutritionQueryResult {
+    var breakdowns: [String: HealthKitNutritionDayBreakdown] = [:]
+    var statusNote: String?
+}
+
 private final class HealthKitNutritionReconciler {
     static let shared = HealthKitNutritionReconciler()
 
@@ -6522,9 +6595,16 @@ private final class HealthKitNutritionReconciler {
         var otherApps: Double = 0
     }
 
+    private struct DailyAmountsResult {
+        var amounts: [String: SourceAmounts] = [:]
+        var statusNote: String?
+    }
+
     private let healthStore = HKHealthStore()
     private let bundleIdentifier = Bundle.main.bundleIdentifier ?? "com.dj.Macrodex"
     private let calendar = Calendar.current
+    private var hasRequestedNutritionReadAuthorization = false
+    private var nutritionReadAuthorizationNote: String?
 
     private static let metrics: [Metric] = [
         Metric(identifier: .dietaryEnergyConsumed, unit: .kilocalorie()) { $0.calories = $1 },
@@ -6533,37 +6613,83 @@ private final class HealthKitNutritionReconciler {
         Metric(identifier: .dietaryFatTotal, unit: .gram()) { $0.fat = $1 }
     ]
 
-    func dailyBreakdowns(startDate: Date, endDateExclusive: Date) async -> [String: HealthKitNutritionDayBreakdown] {
-        guard HKHealthStore.isHealthDataAvailable(),
-              startDate < endDateExclusive
-        else {
-            return [:]
+    func dailyBreakdowns(startDate: Date, endDateExclusive: Date) async -> HealthKitNutritionQueryResult {
+        guard HKHealthStore.isHealthDataAvailable() else {
+            return HealthKitNutritionQueryResult(statusNote: "Apple Health is unavailable on this device")
+        }
+        guard startDate < endDateExclusive else {
+            return HealthKitNutritionQueryResult()
+        }
+
+        let authorizationNote = await requestNutritionReadAuthorizationIfNeeded()
+        if let authorizationNote {
+            return HealthKitNutritionQueryResult(statusNote: authorizationNote)
         }
 
         var breakdowns: [String: HealthKitNutritionDayBreakdown] = [:]
+        var statusNote: String?
         for metric in Self.metrics {
-            let amountsByDay = await dailyAmounts(
+            let result = await dailyAmounts(
                 for: metric,
                 startDate: startDate,
                 endDateExclusive: endDateExclusive
             )
-            for (dateKey, amounts) in amountsByDay {
+            statusNote = statusNote ?? result.statusNote
+            for (dateKey, amounts) in result.amounts {
                 var breakdown = breakdowns[dateKey] ?? HealthKitNutritionDayBreakdown()
                 metric.assign(&breakdown.macrodexTotals, amounts.macrodex)
                 metric.assign(&breakdown.otherAppTotals, amounts.otherApps)
                 breakdowns[dateKey] = breakdown
             }
         }
-        return breakdowns.filter { $0.value.hasHealthKitNutrition }
+        return HealthKitNutritionQueryResult(
+            breakdowns: breakdowns.filter { $0.value.hasHealthKitNutrition },
+            statusNote: statusNote
+        )
+    }
+
+    private func requestNutritionReadAuthorizationIfNeeded() async -> String? {
+        guard !hasRequestedNutritionReadAuthorization else {
+            return nutritionReadAuthorizationNote
+        }
+        hasRequestedNutritionReadAuthorization = true
+
+        var resolvedReadTypes = Set<HKObjectType>()
+        for metric in Self.metrics {
+            if let type = HKObjectType.quantityType(forIdentifier: metric.identifier) {
+                resolvedReadTypes.insert(type)
+            }
+        }
+        let readTypes = resolvedReadTypes
+        guard !readTypes.isEmpty else {
+            nutritionReadAuthorizationNote = "Apple Health nutrition types are unavailable"
+            return nutritionReadAuthorizationNote
+        }
+
+        let note: String? = await withCheckedContinuation { (continuation: CheckedContinuation<String?, Never>) in
+            DispatchQueue.main.async { [healthStore] in
+                healthStore.requestAuthorization(toShare: Set<HKSampleType>(), read: readTypes) { success, error in
+                    if let error {
+                        continuation.resume(returning: "Apple Health nutrition access failed: \(error.localizedDescription)")
+                    } else if !success {
+                        continuation.resume(returning: "Apple Health nutrition access was not completed")
+                    } else {
+                        continuation.resume(returning: nil)
+                    }
+                }
+            }
+        }
+        nutritionReadAuthorizationNote = note
+        return note
     }
 
     private func dailyAmounts(
         for metric: Metric,
         startDate: Date,
         endDateExclusive: Date
-    ) async -> [String: SourceAmounts] {
+    ) async -> DailyAmountsResult {
         guard let quantityType = HKObjectType.quantityType(forIdentifier: metric.identifier) else {
-            return [:]
+            return DailyAmountsResult(statusNote: "Apple Health nutrition type is unavailable: \(metric.identifier.rawValue)")
         }
 
         return await withCheckedContinuation { continuation in
@@ -6583,7 +6709,8 @@ private final class HealthKitNutritionReconciler {
             )
             query.initialResultsHandler = { [calendar, bundleIdentifier] _, collection, error in
                 guard error == nil, let collection else {
-                    continuation.resume(returning: [:])
+                    let message = error?.localizedDescription ?? "Apple Health nutrition query returned no collection"
+                    continuation.resume(returning: DailyAmountsResult(statusNote: "Apple Health nutrition query failed: \(message)"))
                     return
                 }
 
@@ -6612,7 +6739,7 @@ private final class HealthKitNutritionReconciler {
                     totals[dateKey, default: SourceAmounts()].macrodex += dayAmounts.macrodex
                     totals[dateKey, default: SourceAmounts()].otherApps += dayAmounts.otherApps
                 }
-                continuation.resume(returning: totals)
+                continuation.resume(returning: DailyAmountsResult(amounts: totals))
             }
             healthStore.execute(query)
         }
@@ -6667,6 +6794,8 @@ private struct PhotoAttachmentCopy {
 @MainActor
 final class CalorieTrackerStore: ObservableObject {
     static let shared = CalorieTrackerStore()
+    private static let weeklyStripLookbackWeeks = 156
+    private static let daySummaryLookbackDays = weeklyStripLookbackWeeks * 7
 
     @Published var todayTotals = CalorieTotals()
     @Published var goal = CalorieGoal()
@@ -6685,6 +6814,7 @@ final class CalorieTrackerStore: ObservableObject {
     private var db: OpaquePointer?
     private let calendar = Calendar.current
     private var isRefreshing = false
+    private var hasAttemptedHealthKitNutritionHistory = false
     private var lastQueuedHealthKitSyncKey: String?
     private var lastQueuedHealthKitSyncAt: Date?
 
@@ -7731,10 +7861,11 @@ final class CalorieTrackerStore: ObservableObject {
             let localTotals = try loadDayTotals(dateKey: dateKey)
             let start = calendar.startOfDay(for: date)
             let end = calendar.date(byAdding: .day, value: 1, to: start) ?? start
-            let healthBreakdown = await HealthKitNutritionReconciler.shared.dailyBreakdowns(
+            let healthResult = await HealthKitNutritionReconciler.shared.dailyBreakdowns(
                 startDate: start,
                 endDateExclusive: end
-            )[dateKey]
+            )
+            let healthBreakdown = healthResult.breakdowns[dateKey]
             return CalorieLoggedDaySummary(
                 dateKey: dateKey,
                 totals: healthBreakdown?.reconciledTotals(localTotals: localTotals) ?? localTotals,
@@ -7909,7 +8040,7 @@ final class CalorieTrackerStore: ObservableObject {
 
     private func loadRecentDaySummaries() throws {
         let today = calendar.startOfDay(for: Date())
-        let startDate = calendar.date(byAdding: .day, value: -371, to: today) ?? today
+        let startDate = calendar.date(byAdding: .day, value: -Self.daySummaryLookbackDays, to: today) ?? today
         let startKey = Self.dateFormatter.string(from: startDate)
         let endKey = Self.dateFormatter.string(from: today)
         let rows = try query(
@@ -7945,10 +8076,36 @@ final class CalorieTrackerStore: ObservableObject {
     }
 
     private func reconcileHealthKitNutrition() async {
-        await reconcileHealthKitNutrition(forWeekStarting: calendar.macrodexStartOfWeek(for: selectedDate))
+        if !hasAttemptedHealthKitNutritionHistory {
+            await reconcileHealthKitNutritionHistory()
+        } else {
+            await reconcileHealthKitNutrition(forWeekStarting: calendar.macrodexStartOfWeek(for: selectedDate))
+        }
+    }
+
+    private func reconcileHealthKitNutritionHistory() async {
+        hasAttemptedHealthKitNutritionHistory = true
+        let today = calendar.startOfDay(for: Date())
+        let currentWeekStart = calendar.macrodexStartOfWeek(for: today)
+        let historyStart = calendar.date(
+            byAdding: .weekOfYear,
+            value: -Self.weeklyStripLookbackWeeks,
+            to: currentWeekStart
+        ) ?? currentWeekStart
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) ?? today
+        await reconcileHealthKitNutrition(startDate: historyStart, endDateExclusive: tomorrow)
     }
 
     func reconcileHealthKitNutrition(forWeekStarting requestedWeekStart: Date) async {
+        let today = calendar.startOfDay(for: Date())
+        let weekStart = calendar.macrodexStartOfWeek(for: requestedWeekStart)
+        let weekEnd = calendar.date(byAdding: .day, value: 7, to: weekStart) ?? weekStart
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) ?? today
+        let queryEnd = min(weekEnd, tomorrow)
+        await reconcileHealthKitNutrition(startDate: weekStart, endDateExclusive: queryEnd)
+    }
+
+    private func reconcileHealthKitNutrition(startDate: Date, endDateExclusive: Date) async {
         do {
             try openIfNeeded()
             try migrate()
@@ -7956,22 +8113,23 @@ final class CalorieTrackerStore: ObservableObject {
             return
         }
 
-        let today = calendar.startOfDay(for: Date())
-        let weekStart = calendar.macrodexStartOfWeek(for: requestedWeekStart)
-        let weekEnd = calendar.date(byAdding: .day, value: 7, to: weekStart) ?? weekStart
-        let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) ?? today
-        let queryEnd = min(weekEnd, tomorrow)
-        guard weekStart < queryEnd else { return }
+        guard startDate < endDateExclusive else { return }
 
         let selectedDateKey = todayKey
         let localSelectedTotals = todayTotals
         let localSelectedLogCount = todayLogs.count
-        let breakdowns = await HealthKitNutritionReconciler.shared.dailyBreakdowns(
-            startDate: weekStart,
-            endDateExclusive: queryEnd
+        let healthResult = await HealthKitNutritionReconciler.shared.dailyBreakdowns(
+            startDate: startDate,
+            endDateExclusive: endDateExclusive
         )
+        let breakdowns = healthResult.breakdowns
 
-        guard !breakdowns.isEmpty else { return }
+        guard !breakdowns.isEmpty else {
+            if startDate <= selectedDate && selectedDate < endDateExclusive {
+                nutritionDataSourceNote = healthResult.statusNote
+            }
+            return
+        }
 
         for (dateKey, breakdown) in breakdowns {
             let localSummary: CalorieDaySummary
