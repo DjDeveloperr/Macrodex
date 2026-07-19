@@ -618,8 +618,7 @@ public enum MacrodexAgentBuiltInModelCatalogs {
                 description: "Ultra-fast coding model available through ChatGPT Codex.",
                 supportedReasoningEfforts: ["low", "medium", "high", "xhigh"],
                 defaultReasoningEffort: "high",
-                supportsChatGPTAuth: true,
-                hidden: true
+                supportsChatGPTAuth: true
             ),
             MacrodexAgentModelInfo(
                 id: "gpt-5.2",
@@ -672,7 +671,7 @@ public enum MacrodexAgentBuiltInModelCatalogs {
                 providerID: MacrodexAgentBuiltInProviderRegistry.foundationModels.id,
                 displayName: "System",
                 description: "Apple Foundation Models on-device model. No ChatGPT login required.",
-                supportsTools: false,
+                supportsTools: true,
                 supportsStreaming: true,
                 isDefault: true
             ),
@@ -683,7 +682,7 @@ public enum MacrodexAgentBuiltInModelCatalogs {
                 description: "Apple Foundation Models Private Cloud Compute model when available on this OS.",
                 supportedReasoningEfforts: ["low", "medium", "high"],
                 defaultReasoningEffort: "medium",
-                supportsTools: false,
+                supportsTools: true,
                 supportsStreaming: true
             )
         ]

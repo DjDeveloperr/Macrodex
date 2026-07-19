@@ -541,10 +541,11 @@ private struct ConversationTimelineItemRow: View, Equatable {
         case .error(let data):
             return AnyView(
                 ConversationSystemCardRow(
-                    title: data.title.isEmpty ? "Error" : data.title,
+                    title: displayErrorTitle(data.title),
                     content: [data.message, data.details].compactMap { $0 }.joined(separator: "\n\n"),
                     accent: MacrodexTheme.danger,
                     iconName: "exclamationmark.triangle.fill",
+                    horizontalPadding: 0
                 )
             )
         case .note(let data):
@@ -557,6 +558,15 @@ private struct ConversationTimelineItemRow: View, Equatable {
                 )
             )
         }
+    }
+
+    private func displayErrorTitle(_ title: String) -> String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "Error" }
+        if trimmed.localizedCaseInsensitiveContains("runtime error") {
+            return "Error"
+        }
+        return trimmed
     }
 
     @ViewBuilder
@@ -2258,6 +2268,7 @@ private struct ConversationSystemCardRow: View {
     let content: String
     let accent: Color
     let iconName: String
+    var horizontalPadding: CGFloat = 12
 
     var bodyView: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -2276,7 +2287,7 @@ private struct ConversationSystemCardRow: View {
                 )
             }
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, horizontalPadding)
         .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
     }

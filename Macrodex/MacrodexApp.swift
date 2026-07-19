@@ -1,4 +1,5 @@
 import Observation
+import AppIntents
 import CoreSpotlight
 import PhotosUI
 import SwiftUI
@@ -145,8 +146,9 @@ struct MacrodexApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
+        MacrodexAppShortcuts.updateAppShortcutParameters()
         #if DEBUG
-        try? SimDeckInspectorAgent.shared.start()
+        _ = try? SimDeckInspectorAgent.shared.start()
         #endif
     }
 
@@ -504,19 +506,28 @@ private struct HomeNavigationView: View {
         }
     }
 
+    #if DEBUG
+    private func openDrawerForVisualAutomationIfNeeded() {
+        guard ProcessInfo.processInfo.environment["MACRODEX_FORCE_DRAWER_OPEN"] == "1" else { return }
+        drawerController.setOpen(true, animated: false)
+    }
+    #endif
+
     private var authenticatedNavigation: some View {
         @Bindable var coordinator = navigationCoordinator
 
         return AppDrawerContainer(
             controller: drawerController,
-            openingActivationWidth: 160,
+            openingActivationWidth: .greatestFiniteMagnitude,
             topSafeAreaInset: topInset,
             bottomSafeAreaInset: bottomInset,
             drawer: {
                 NavigationDrawerView(
+                    topSafeAreaInset: topInset,
                     bottomSafeAreaInset: bottomInset,
                     selection: drawerSelection,
                     onShowDashboard: showDashboard,
+                    onShowInsights: showInsights,
                     onShowLibrary: showLibrary,
                     onShowSettings: showSettings,
                     onOpenNewChatDraft: openNewChatDraft,
@@ -544,6 +555,9 @@ private struct HomeNavigationView: View {
             .presentationDragIndicator(.visible)
         }
         .onAppear {
+            #if DEBUG
+            openDrawerForVisualAutomationIfNeeded()
+            #endif
             handlePendingAppIntentRoute()
         }
         .onOpenURL { url in
@@ -584,6 +598,8 @@ private struct HomeNavigationView: View {
             switch selectedPrimaryItem {
             case .dashboard:
                 homeDashboard
+            case .insights:
+                InsightsScreen()
             case .library:
                 CalorieLibraryScreen()
             case .settings:
@@ -841,8 +857,19 @@ private struct HomeNavigationView: View {
     }
 
     @MainActor
-    private func startQuickThread(prompt: String, images: [UIImage], dashboardDate: Date? = nil) async throws {
-        try await startDraftThread(prompt: prompt, images: images, skillMentions: [], dashboardDate: dashboardDate)
+    private func startQuickThread(
+        prompt: String,
+        images: [UIImage],
+        dashboardDate: Date? = nil,
+        openImmediately: Bool = false
+    ) async throws {
+        try await startDraftThread(
+            prompt: prompt,
+            images: images,
+            skillMentions: [],
+            dashboardDate: dashboardDate,
+            openImmediately: openImmediately
+        )
     }
 
     @MainActor
@@ -855,7 +882,8 @@ private struct HomeNavigationView: View {
         prompt: String,
         images: [UIImage],
         skillMentions: [SkillMentionSelection],
-        dashboardDate: Date? = nil
+        dashboardDate: Date? = nil,
+        openImmediately: Bool = false
     ) async throws {
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedPrompt.isEmpty || !images.isEmpty else { return }
@@ -871,56 +899,100 @@ private struct HomeNavigationView: View {
             )
         }
 
-        let cwd = await AgentRuntimeBootstrap.defaultCwd()
-
         if !conversationWarmup.hasCompletedWarmup {
             Task { await conversationWarmup.prewarmIfNeeded() }
         }
         let selectedModel = selectedModelOverride(for: serverId, requiresImageInput: !images.isEmpty)
         let selectedEffort = selectedReasoningOverride()
         let config = launchConfig(serverId: serverId, model: selectedModel, dashboardDate: dashboardDate)
+        let initialCwd = preferredDraftWorkingDirectory()
+        workDir = initialCwd
+        appState.currentCwd = initialCwd
+
+        let provisionalKey: ThreadKey?
+        if openImmediately {
+            let key = ThreadKey(serverId: serverId, threadId: "pending-\(UUID().uuidString)")
+            appModel.seedPendingThread(
+                key: key,
+                cwd: initialCwd,
+                prompt: trimmedPrompt,
+                model: selectedModel,
+                reasoningEffort: selectedEffort,
+                approvalPolicy: config.approvalPolicy,
+                includeUserMessage: true
+            )
+            appModel.activateThread(key)
+            openConversation(key)
+            provisionalKey = key
+        } else {
+            provisionalKey = nil
+        }
+
+        let cwd = await AgentRuntimeBootstrap.defaultCwd()
         workDir = cwd
         appState.currentCwd = cwd
 
-        let startedKey = try await appModel.client.startThread(
-            serverId: serverId,
-            params: config.threadStartRequest(
-                cwd: cwd,
-                dynamicTools: AgentDynamicToolSpecs.defaultThreadTools(
-                    includeGenerativeUI: false
+        do {
+            let startedKey = try await appModel.client.startThread(
+                serverId: serverId,
+                params: config.threadStartRequest(
+                    cwd: cwd,
+                    dynamicTools: AgentDynamicToolSpecs.defaultThreadTools(
+                        includeGenerativeUI: false
+                    )
                 )
             )
-        )
-        RecentDirectoryStore.shared.record(path: cwd, for: serverId)
-        appModel.seedPendingThread(
-            key: startedKey,
-            cwd: cwd,
-            prompt: trimmedPrompt,
-            model: selectedModel,
-            reasoningEffort: selectedEffort,
-            approvalPolicy: config.approvalPolicy
-        )
-        appModel.activateThread(startedKey)
-        withAnimation(.easeInOut(duration: 0.18)) {
+            RecentDirectoryStore.shared.record(path: cwd, for: serverId)
+            appModel.seedPendingThread(
+                key: startedKey,
+                cwd: cwd,
+                prompt: trimmedPrompt,
+                model: selectedModel,
+                reasoningEffort: selectedEffort,
+                approvalPolicy: config.approvalPolicy,
+                includeUserMessage: true
+            )
+            appModel.activateThread(startedKey)
             openConversation(startedKey)
-        }
-        Task { await appModel.loadConversationMetadataIfNeeded(serverId: serverId) }
+            if let provisionalKey {
+                appModel.removePendingThread(key: provisionalKey)
+            }
+            Task { await appModel.loadConversationMetadataIfNeeded(serverId: serverId) }
 
-        var additionalInputs = skillMentions.map { mention in
-            AppUserInput.skill(name: mention.name, path: AbsolutePath(value: mention.path))
+            var additionalInputs = skillMentions.map { mention in
+                AppUserInput.skill(name: mention.name, path: AbsolutePath(value: mention.path))
+            }
+            additionalInputs.append(contentsOf: images.compactMap(ConversationAttachmentSupport.prepareImage).map(\.userInput))
+            let payload = AppComposerPayload(
+                text: trimmedPrompt,
+                additionalInputs: additionalInputs,
+                approvalPolicy: appState.launchApprovalPolicy(for: startedKey),
+                sandboxPolicy: appState.turnSandboxPolicy(for: startedKey),
+                model: selectedModel,
+                effort: selectedEffort,
+                serviceTier: ServiceTier(wireValue: fastMode ? "fast" : nil)
+            )
+            try await appModel.startTurn(key: startedKey, payload: payload)
+            Task { await appModel.refreshSnapshot() }
+        } catch {
+            if let provisionalKey {
+                appModel.removePendingThread(key: provisionalKey)
+                if navigationCoordinator.activeConversationKey == provisionalKey {
+                    showDashboard()
+                }
+            }
+            throw error
         }
-        additionalInputs.append(contentsOf: images.compactMap(ConversationAttachmentSupport.prepareImage).map(\.userInput))
-        let payload = AppComposerPayload(
-            text: trimmedPrompt,
-            additionalInputs: additionalInputs,
-            approvalPolicy: appState.launchApprovalPolicy(for: startedKey),
-            sandboxPolicy: appState.turnSandboxPolicy(for: startedKey),
-            model: selectedModel,
-            effort: selectedEffort,
-            serviceTier: ServiceTier(wireValue: fastMode ? "fast" : nil)
-        )
-        try await appModel.startTurn(key: startedKey, payload: payload)
-        Task { await appModel.refreshSnapshot() }
+    }
+
+    private func preferredDraftWorkingDirectory() -> String {
+        let current = appState.currentCwd.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !current.isEmpty { return current }
+
+        let stored = workDir.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !stored.isEmpty { return stored }
+
+        return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.path ?? "/"
     }
 
     private func launchConfig(for threadKey: ThreadKey? = nil) -> AppThreadLaunchConfig {
@@ -1026,9 +1098,18 @@ private struct HomeNavigationView: View {
         DashboardScreen(
             bottomInset: bottomInset,
             onQuickComposerSend: { prompt, images, selectedDate in
-                try await startQuickThread(prompt: prompt, images: images, dashboardDate: selectedDate)
+                try await startQuickThread(
+                    prompt: prompt,
+                    images: images,
+                    dashboardDate: selectedDate,
+                    openImmediately: true
+                )
             },
-            composerFocusRequestID: appState.homeComposerFocusRequestID
+            composerFocusRequestID: appState.homeComposerFocusRequestID,
+            composerPrefillRequest: appState.homeComposerPrefillRequest,
+            onComposerPrefillConsumed: { id in
+                appState.clearHomeComposerPrefill(id: id)
+            }
         )
             .macrodexSimDeckPublishSwiftUIViewTree(
                 "Macrodex Dashboard Tree",
@@ -1200,6 +1281,15 @@ private struct HomeNavigationView: View {
         navigationPath.removeAll()
     }
 
+    private func showInsights() {
+        appState.showModelSelector = false
+        selectedPrimaryItem = .insights
+        appModel.activateThread(nil)
+        navigationCoordinator.isDraftConversationActive = false
+        navigationCoordinator.activeConversationKey = nil
+        navigationPath.removeAll()
+    }
+
     private func showSettings() {
         appState.showModelSelector = false
         selectedPrimaryItem = .settings
@@ -1216,7 +1306,10 @@ private struct HomeNavigationView: View {
         else {
             return
         }
+        let pendingFoodQuery = defaults.string(forKey: MacrodexFoodSpotlight.pendingFoodQueryKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         defaults.removeObject(forKey: "appIntent.pendingSection")
+        defaults.removeObject(forKey: MacrodexFoodSpotlight.pendingFoodQueryKey)
 
         switch section {
         case .library:
@@ -1224,7 +1317,14 @@ private struct HomeNavigationView: View {
         case .newChat:
             showDashboard()
             appState.requestHomeComposerFocus()
-        case .dashboard, .foodSearch, .goals:
+        case .foodSearch:
+            showDashboard()
+            if let pendingFoodQuery, !pendingFoodQuery.isEmpty {
+                appState.requestHomeComposerPrefill(text: pendingFoodQuery, startsFoodSearch: true)
+            } else {
+                appState.requestHomeComposerFocus()
+            }
+        case .dashboard, .goals:
             showDashboard()
         }
     }
@@ -1271,7 +1371,6 @@ private struct DraftConversationDestinationScreen: View {
     let onResumeSessions: (String) -> Void
     let onOpenConversation: (ThreadKey) -> Void
     let onCancel: () -> Void
-    @State private var showModelSelector = false
 
     private var availableModels: [ModelInfo] {
         appModel.availableModels(for: serverId)
@@ -1308,23 +1407,13 @@ private struct DraftConversationDestinationScreen: View {
                 DrawerMenuButton()
             }
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showModelSelector = true
-                } label: {
-                    Image(systemName: "cpu")
-                }
-                .accessibilityLabel("Model settings")
+                ModelSettingsMenuButton(
+                    models: availableModels,
+                    selectedModel: selectedModelBinding,
+                    reasoningEffort: reasoningEffortBinding,
+                    labelStyle: .toolbarIcon
+                )
             }
-        }
-        .sheet(isPresented: $showModelSelector) {
-            ConversationOptionsSheet(
-                models: availableModels,
-                selectedModel: selectedModelBinding,
-                reasoningEffort: reasoningEffortBinding,
-                threadKey: nil
-            )
-            .presentationDetents([.medium, .large])
-            .presentationDragIndicator(.visible)
         }
         .task(id: serverId) {
             await appModel.loadConversationMetadataIfNeeded(serverId: serverId)
@@ -1596,14 +1685,6 @@ extension Notification.Name {
     static let dashboardComposerWillOpenModelMenu = Notification.Name("com.dj.macrodex.dashboardComposerWillOpenModelMenu")
 }
 
-private struct DashboardComposerFramePreferenceKey: PreferenceKey {
-    static var defaultValue: CGRect = .zero
-
-    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
-        value = nextValue()
-    }
-}
-
 private enum DashboardFoodSearchSelection: Identifiable {
     case library(CalorieLibraryItem)
     case canonical(CanonicalFoodItem)
@@ -1658,8 +1739,11 @@ private extension Double {
 
 struct DashboardQuickComposerBar: View {
     @Environment(AppModel.self) private var appModel
+    @Environment(DrawerController.self) private var drawerController
     let bottomInset: CGFloat
     let focusRequestID: Int
+    let prefillRequest: AppState.HomeComposerPrefillRequest?
+    let onPrefillConsumed: (UUID) -> Void
     var pullRevealProgress: CGFloat = 0
     let selectedDate: Date
     var onActiveChange: ((Bool) -> Void)? = nil
@@ -1681,11 +1765,9 @@ struct DashboardQuickComposerBar: View {
     @State private var errorMessage: String?
     @State private var isComposerFocused = false
     @State private var keyboardVisible = false
-    @State private var keyboardTop: CGFloat?
-    @State private var composerFrame: CGRect = .zero
-    @State private var restingComposerMaxY: CGFloat?
+    @State private var keyboardOverlap: CGFloat = 0
+    @State private var maximumKeyboardOverlap: CGFloat = 0
     @State private var composerContentHeight: CGFloat = 56
-    @State private var keyboardLift: CGFloat = 0
     @State private var handledFocusRequestID = 0
     @State private var focusDismissalGeneration = 0
     @State private var keepOpenForModelMenu = false
@@ -1866,38 +1948,29 @@ struct DashboardQuickComposerBar: View {
             }
         }
         .padding(.bottom, composerBottomPadding)
-        .background(
-            GeometryReader { proxy in
-                Color.clear.preference(
-                    key: DashboardComposerFramePreferenceKey.self,
-                    value: proxy.frame(in: .global)
-                )
-            }
-        )
-        .offset(y: keyboardVisible ? -keyboardLift : closedComposerYOffset - interactivePullLift)
+        .offset(y: keyboardVisible ? 0 : closedComposerYOffset - interactivePullLift)
         .scaleEffect(1 + (0.012 * clampedPullRevealProgress), anchor: .bottom)
-        .onPreferenceChange(DashboardComposerFramePreferenceKey.self) { frame in
-            composerFrame = frame
-            if !keyboardVisible, clampedPullRevealProgress <= 0.001, frame != .zero {
-                restingComposerMaxY = frame.maxY
-            }
-            updateKeyboardLift(notification: nil)
-        }
         .onPreferenceChange(ConversationComposerContentHeightPreferenceKey.self) { height in
             composerContentHeight = max(56, height)
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { notification in
-            keyboardVisible = true
+            guard !drawerController.isVisiblyOpen else {
+                clearKeyboardStateForDrawer()
+                return
+            }
             updateKeyboardFrame(from: notification)
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
+            guard !drawerController.isVisiblyOpen else {
+                clearKeyboardStateForDrawer()
+                return
+            }
             updateKeyboardFrame(from: notification)
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             focusDismissalGeneration += 1
+            keyboardOverlap = 0
             keyboardVisible = false
-            keyboardTop = nil
-            setKeyboardLift(0, notification: nil)
             if keepOpenForModelMenu {
                 isComposerFocused = false
             }
@@ -1911,6 +1984,7 @@ struct DashboardQuickComposerBar: View {
             isComposerFocused = false
         }
         .onReceive(NotificationCenter.default.publisher(for: .dashboardComposerShouldFocusKeyboard)) { _ in
+            guard !drawerController.isVisiblyOpen else { return }
             modelMenuHoldID += 1
             keepOpenForModelMenu = false
             isComposerFocused = true
@@ -1930,13 +2004,22 @@ struct DashboardQuickComposerBar: View {
         }
         .onAppear {
             onActiveChange?(isActive)
+            applyPrefillIfNeeded()
             focusIfRequested()
         }
         .onChange(of: isActive) { _, active in
             onActiveChange?(active)
         }
+        .onChange(of: drawerController.isVisiblyOpen) { _, isVisiblyOpen in
+            if isVisiblyOpen {
+                clearKeyboardStateForDrawer()
+            }
+        }
         .onChange(of: focusRequestID) { _, _ in
             focusIfRequested()
+        }
+        .onChange(of: prefillRequest?.id) { _, _ in
+            applyPrefillIfNeeded()
         }
         .onDisappear {
             focusDismissalGeneration += 1
@@ -1951,6 +2034,7 @@ struct DashboardQuickComposerBar: View {
     }
 
     private func focusIfRequested() {
+        guard !drawerController.isVisiblyOpen else { return }
         guard focusRequestID > 0, focusRequestID != handledFocusRequestID else { return }
         let requestID = focusRequestID
         let generation = focusDismissalGeneration
@@ -1963,12 +2047,32 @@ struct DashboardQuickComposerBar: View {
         }
     }
 
+    private func applyPrefillIfNeeded() {
+        guard !drawerController.isVisiblyOpen else { return }
+        guard let prefillRequest else { return }
+        inputText = prefillRequest.text
+        isFoodSearchMode = prefillRequest.startsFoodSearch
+        if prefillRequest.startsFoodSearch {
+            scheduleFoodSearch(for: prefillRequest.text)
+        }
+        onPrefillConsumed(prefillRequest.id)
+        isComposerFocused = true
+    }
+
     private var composerBottomPadding: CGFloat {
-        keyboardVisible ? 8 : 10
+        guard !drawerController.isVisiblyOpen else {
+            return ConversationComposerKeyboardMetrics.restingBottomPadding
+        }
+        return MacrodexKeyboardGeometry.bottomPadding(
+            overlap: keyboardOverlap,
+            maximumOverlap: maximumKeyboardOverlap,
+            resting: ConversationComposerKeyboardMetrics.restingBottomPadding,
+            attached: ConversationComposerKeyboardMetrics.keyboardAttachedBottomPadding
+        )
     }
 
     private var closedComposerYOffset: CGFloat {
-        min(max(bottomInset - 18, 0), 16)
+        0
     }
 
     private var clampedPullRevealProgress: CGFloat {
@@ -1981,57 +2085,25 @@ struct DashboardQuickComposerBar: View {
     }
 
     private func updateKeyboardFrame(from notification: Notification) {
-        guard let endFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
-              let window = UIApplication.shared.connectedScenes
-                  .compactMap({ $0 as? UIWindowScene })
-                  .flatMap(\.windows)
-                  .first(where: \.isKeyWindow)
-        else {
-            keyboardTop = nil
-            updateKeyboardLift(notification: notification)
+        guard let overlap = MacrodexKeyboardGeometry.overlap(from: notification) else {
+            keyboardVisible = true
             return
         }
-
-        let keyboardFrame = window.convert(endFrame, from: nil)
-        keyboardTop = keyboardFrame.minY
-        keyboardVisible = keyboardFrame.minY < window.bounds.maxY
-        updateKeyboardLift(notification: notification)
+        keyboardOverlap = overlap
+        maximumKeyboardOverlap = max(maximumKeyboardOverlap, overlap)
+        keyboardVisible = overlap > 1
     }
 
-    private func updateKeyboardLift(notification: Notification?) {
-        guard keyboardVisible,
-              let keyboardTop
-        else {
-            setKeyboardLift(0, notification: notification)
-            return
-        }
 
-        let desiredGap: CGFloat = 5
-        let frameMaxY = restingComposerMaxY ?? (composerFrame == .zero
-            ? UIScreen.main.bounds.maxY - max(bottomInset, 0) - composerBottomPadding
-            : composerFrame.maxY)
-        let lift = max(0, frameMaxY + desiredGap - keyboardTop)
-        setKeyboardLift(lift, notification: notification)
-    }
-
-    private func setKeyboardLift(_ lift: CGFloat, notification: Notification?) {
-        guard abs(keyboardLift - lift) > 0.5 else { return }
-
-        let update = {
-            keyboardLift = lift
-        }
-
-        guard let notification,
-              let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double,
-              duration > 0
-        else {
-            update()
-            return
-        }
-
-        withAnimation(.easeOut(duration: duration)) {
-            update()
-        }
+    private func clearKeyboardStateForDrawer() {
+        focusDismissalGeneration += 1
+        modelMenuHoldID += 1
+        keyboardOverlap = 0
+        keyboardVisible = false
+        isComposerFocused = false
+        keepOpenForModelMenu = false
+        isFoodSearchMode = false
+        clearFoodSearchState(cancelTask: true)
     }
 
     private func submit() {
@@ -2241,18 +2313,18 @@ struct DashboardQuickComposerBar: View {
     }
 
     private func applyFoodSuggestion(_ suggestion: ComposerFoodSearchResult) {
+        focusDismissalGeneration += 1
+        NotificationCenter.default.post(name: .dashboardComposerShouldDismissKeyboard, object: nil)
+        UIApplication.shared.macrodexDismissKeyboard()
         if let selection = foodSearchSelection(for: suggestion) {
             selectedFoodSearchResult = selection
         } else {
             selectedFoodSearchResult = .suggested(suggestion)
         }
         inputText = ""
-        isComposerFocused = true
+        isComposerFocused = false
         isFoodSearchMode = false
         clearFoodSearchState(cancelTask: true)
-        DispatchQueue.main.async {
-            updateKeyboardLift(notification: nil)
-        }
     }
 
     private func foodSearchSelection(for suggestion: ComposerFoodSearchResult) -> DashboardFoodSearchSelection? {

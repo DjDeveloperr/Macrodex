@@ -137,15 +137,6 @@ struct ConversationComposerModalCoordinator<Content: View>: View {
                 CameraView(image: $cameraImage)
                     .ignoresSafeArea()
             }
-            .sheet(isPresented: $showModelSelector) {
-                ModelSelectorSheet(
-                    models: snapshot.availableModels,
-                    selectedModel: selectedModelBinding,
-                    reasoningEffort: reasoningEffortBinding
-                )
-                .presentationDetents([.medium])
-                .presentationDragIndicator(.visible)
-            }
             .sheet(isPresented: $showPermissionsSheet) {
                 permissionsSheetContent
                     .task(id: snapshot.threadKey.threadId) {

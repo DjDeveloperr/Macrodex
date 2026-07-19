@@ -53,13 +53,15 @@ private struct DashboardScrollTopOffsetPreferenceKey: PreferenceKey {
 
 struct DashboardScreen: View {
     @Environment(DrawerController.self) private var drawerController
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(AppModel.self) private var appModel
     @Environment(AppState.self) private var appState
     let bottomInset: CGFloat
     let onQuickComposerSend: ((String, [UIImage], Date) async throws -> Void)?
     let composerFocusRequestID: Int
+    let composerPrefillRequest: AppState.HomeComposerPrefillRequest?
+    let onComposerPrefillConsumed: (UUID) -> Void
 
-    @AppStorage("fastMode") private var fastMode = false
     @StateObject private var store = CalorieTrackerStore.shared
     @State private var activeSheet: DashboardSheet?
     @State private var selectedLogItem: CalorieLogItem?
@@ -71,7 +73,6 @@ struct DashboardScreen: View {
     @State private var keyboardOverlayProgress: CGFloat = 0
     @State private var dashboardComposerPullProgress: CGFloat = 0
     @State private var dashboardTopOverscroll: CGFloat = 0
-    @State private var dashboardMaxPullOverscroll: CGFloat = 0
     @State private var dashboardTopProbeRestingOffset: CGFloat?
     @State private var dashboardCurrentTopProbeOffset: CGFloat = 0
     @State private var dashboardScrollDistanceFromTop: CGFloat = 0
@@ -85,60 +86,69 @@ struct DashboardScreen: View {
     init(
         bottomInset: CGFloat = 0,
         onQuickComposerSend: ((String, [UIImage], Date) async throws -> Void)? = nil,
-        composerFocusRequestID: Int = 0
+        composerFocusRequestID: Int = 0,
+        composerPrefillRequest: AppState.HomeComposerPrefillRequest? = nil,
+        onComposerPrefillConsumed: @escaping (UUID) -> Void = { _ in }
     ) {
         self.bottomInset = bottomInset
         self.onQuickComposerSend = onQuickComposerSend
         self.composerFocusRequestID = composerFocusRequestID
+        self.composerPrefillRequest = composerPrefillRequest
+        self.onComposerPrefillConsumed = onComposerPrefillConsumed
         _dashboardMetricsAreRevealed = State(
             initialValue: CalorieTrackerStore.shared.hasClaimedInitialDashboardMetricsReveal
         )
     }
 
     var body: some View {
-        ZStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: DashboardTone.blockSpacing) {
-                    dashboardHeader
-                    calorieProgressSection
-                    WeeklyMacroStrip(store: store)
-                    macroSummary
-                    dashboardSummarySection
-                    dailyNoteCard
-                    todayLogSection
-                }
-                .macrodexSimDeckPublishSwiftUIViewTree(
-                    "Macrodex Dashboard Content",
-                    id: "macrodex.swiftui.dashboard.content",
-                    maxDepth: 16
-                )
-                .background(alignment: .top) {
-                    dashboardScrollTopProbe
-                }
-                .padding(.horizontal, DashboardTone.sectionPadding)
-                .padding(.top, 12)
-                .padding(.bottom, 12)
+        ScrollView {
+            VStack(alignment: .leading, spacing: DashboardTone.blockSpacing) {
+                dashboardHeader
+                calorieProgressSection
+                WeeklyMacroStrip(store: store)
+                macroSummary
+                dashboardSummarySection
+                dailyNoteCard
+                todayLogSection
             }
-            .coordinateSpace(name: Self.dashboardScrollCoordinateSpace)
-            .onPreferenceChange(DashboardScrollTopOffsetPreferenceKey.self) { offset in
-                updateDashboardComposerPull(topProbeOffset: offset)
+            .macrodexSimDeckPublishSwiftUIViewTree(
+                "Macrodex Dashboard Content",
+                id: "macrodex.swiftui.dashboard.content",
+                maxDepth: 16
+            )
+            .background(alignment: .top) {
+                dashboardScrollTopProbe
             }
-            .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                max(geometry.contentOffset.y + geometry.contentInsets.top, 0)
-            } action: { _, distanceFromTop in
-                dashboardScrollDistanceFromTop = distanceFromTop
+            .padding(.horizontal, DashboardTone.sectionPadding)
+            .padding(.top, 12)
+            .padding(.bottom, 12)
+        }
+        .coordinateSpace(name: Self.dashboardScrollCoordinateSpace)
+        .onPreferenceChange(DashboardScrollTopOffsetPreferenceKey.self) { offset in
+            updateDashboardComposerPull(topProbeOffset: offset)
+        }
+        .onScrollGeometryChange(for: CGFloat.self) { geometry in
+            max(geometry.contentOffset.y + geometry.contentInsets.top, 0)
+        } action: { _, distanceFromTop in
+            dashboardScrollDistanceFromTop = distanceFromTop
+        }
+        .onScrollPhaseChange { _, newPhase in
+            dashboardScrollPhase = newPhase
+            if !newPhase.isScrolling {
+                finishDashboardComposerPull()
             }
-            .onScrollPhaseChange { _, newPhase in
-                dashboardScrollPhase = newPhase
-                if !newPhase.isScrolling {
-                    finishDashboardComposerPull()
-                }
-            }
-            .blur(radius: dashboardContentBlurRadius)
-
+        }
+        .blur(radius: dashboardContentBlurRadius)
+        .overlay(alignment: .bottom) {
+            dashboardBottomProgressiveBackdrop
+        }
+        .overlay {
             dashboardKeyboardBlurOverlay
         }
-        .ignoresSafeArea(.keyboard, edges: .bottom)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            dashboardComposerInset
+        }
+        .ignoresSafeArea(.container, edges: .bottom)
         .scrollDisabled(drawerController.progress > 0.001)
         .scrollDismissesKeyboard(.interactively)
         .simultaneousGesture(dashboardComposerPullGesture)
@@ -146,6 +156,8 @@ struct DashboardScreen: View {
             if progress > 0.001 {
                 dismissKeyboardForDrawerOpenIfNeeded()
                 dismissDashboardSheets()
+                setKeyboardOverlayProgress(0, notification: nil)
+                resetDashboardComposerPull()
             } else {
                 dismissedKeyboardForDrawerOpen = false
             }
@@ -155,9 +167,6 @@ struct DashboardScreen: View {
                 dismissKeyboardForDrawerOpenIfNeeded()
                 dismissDashboardSheets()
             }
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            dashboardComposerInset
         }
         .background(calorieBackground)
         .task(id: dashboardInsightHash) {
@@ -223,9 +232,17 @@ struct DashboardScreen: View {
             dashboardMetricsRevealTask?.cancel()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { notification in
+            guard !drawerController.isVisiblyOpen else {
+                setKeyboardOverlayProgress(0, notification: nil)
+                return
+            }
             setKeyboardOverlayProgress(1, notification: notification)
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
+            guard !drawerController.isVisiblyOpen else {
+                setKeyboardOverlayProgress(0, notification: nil)
+                return
+            }
             updateKeyboardOverlayProgress(from: notification)
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { notification in
@@ -278,6 +295,21 @@ struct DashboardScreen: View {
     }
 
     @ViewBuilder
+    private var dashboardBottomProgressiveBackdrop: some View {
+        let progress = dashboardAtmosphereProgress
+        MacrodexBottomProgressiveBackdrop(colorScheme: colorScheme)
+            .frame(
+                height: 184
+                    + max(bottomInset, 0)
+                    + dashboardKeyboardBlurKeyboardOverlap * progress
+            )
+            .offset(y: 54)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .allowsHitTesting(false)
+            .ignoresSafeArea([.container, .keyboard], edges: .bottom)
+    }
+
+    @ViewBuilder
     private var dashboardKeyboardBlurOverlay: some View {
         let progress = dashboardAtmosphereProgress
         if progress > 0.001 {
@@ -308,8 +340,7 @@ struct DashboardScreen: View {
                     dismissKeyboard()
                 }
                 .allowsHitTesting(keyboardOverlayProgress > 0.001)
-                .ignoresSafeArea(.container, edges: .bottom)
-                .ignoresSafeArea(.keyboard, edges: .bottom)
+                .ignoresSafeArea([.container, .keyboard], edges: .bottom)
                 .transition(.opacity)
         }
     }
@@ -319,7 +350,8 @@ struct DashboardScreen: View {
     }
 
     private var dashboardAtmosphereProgress: CGFloat {
-        max(keyboardOverlayProgress, dashboardComposerPullProgress * 0.82)
+        guard !drawerController.isVisiblyOpen else { return 0 }
+        return max(keyboardOverlayProgress, dashboardComposerPullProgress * 0.82)
     }
 
     private var dashboardKeyboardBlurBottomBleed: CGFloat {
@@ -327,22 +359,26 @@ struct DashboardScreen: View {
     }
 
     private var dashboardKeyboardBlurKeyboardOverlap: CGFloat {
-        24
+        112
     }
 
     @ViewBuilder
     private var dashboardComposerInset: some View {
         if let onQuickComposerSend {
-            DashboardQuickComposerBar(
-                bottomInset: bottomInset,
-                focusRequestID: composerFocusRequestID,
-                pullRevealProgress: dashboardComposerPullProgress,
-                selectedDate: store.selectedDate,
-                onActiveChange: { isActive in
-                    dashboardComposerIsActive = isActive
-                },
-                onSend: onQuickComposerSend
-            )
+            VStack(spacing: 0) {
+                DashboardQuickComposerBar(
+                    bottomInset: bottomInset,
+                    focusRequestID: composerFocusRequestID,
+                    prefillRequest: composerPrefillRequest,
+                    onPrefillConsumed: onComposerPrefillConsumed,
+                    pullRevealProgress: dashboardComposerPullProgress,
+                    selectedDate: store.selectedDate,
+                    onActiveChange: { isActive in
+                        dashboardComposerIsActive = isActive
+                    },
+                    onSend: onQuickComposerSend
+                )
+            }
             .macrodexSimDeckElement(
                 "Dashboard composer",
                 id: "macrodex.dashboard.composer"
@@ -352,7 +388,6 @@ struct DashboardScreen: View {
                 id: "macrodex.swiftui.dashboard.composer",
                 maxDepth: 14
             )
-            .padding(.horizontal, 12)
             .padding(.top, 6)
             .transition(.move(edge: .bottom).combined(with: .opacity))
             .zIndex(20)
@@ -751,16 +786,12 @@ struct DashboardScreen: View {
         }
 
         guard dashboardTopOverscroll > 0.5 else {
-            if dashboardScrollPhase == .tracking || dashboardScrollPhase == .interacting {
-                dashboardMaxPullOverscroll = 0
-            }
             if dashboardComposerPullProgress > 0 {
                 dashboardComposerPullProgress = 0
             }
             return
         }
 
-        dashboardMaxPullOverscroll = max(dashboardMaxPullOverscroll, dashboardTopOverscroll)
         let progress = dashboardComposerPullProgress(for: dashboardTopOverscroll)
         dashboardComposerPullProgress = progress
     }
@@ -797,8 +828,8 @@ struct DashboardScreen: View {
     }
 
     private func finishDashboardComposerPull() {
-        let overscroll = max(dashboardTopOverscroll, dashboardMaxPullOverscroll)
-        let progress = max(dashboardComposerPullProgress, dashboardComposerPullProgress(for: overscroll))
+        let overscroll = dashboardTopOverscroll
+        let progress = dashboardComposerPullProgress(for: overscroll)
         guard progress > 0 else {
             resetDashboardComposerPull()
             return
@@ -826,7 +857,6 @@ struct DashboardScreen: View {
     private func resetDashboardComposerPull() {
         dashboardComposerPullProgress = 0
         dashboardTopOverscroll = 0
-        dashboardMaxPullOverscroll = 0
     }
 
     private var isDashboardAtTopForComposerPull: Bool {
@@ -838,7 +868,7 @@ struct DashboardScreen: View {
     private var canInteractivelyRevealDashboardComposer: Bool {
         onQuickComposerSend != nil
             && !isDashboardComposerOpen
-            && !drawerController.shouldSuppressContentInteractions
+            && !drawerController.isVisiblyOpen
             && activeSheet == nil
             && selectedLogItem == nil
             && selectedMeal == nil
@@ -850,60 +880,17 @@ struct DashboardScreen: View {
     }
 
     private var dashboardModelMenu: some View {
-        Menu {
-            if dashboardAvailableModels.isEmpty {
-                Text("No models available")
-            } else {
-                Section("Model") {
-                    ForEach(dashboardAvailableModels) { model in
-                        Button {
-                            appState.selectedModel = model.id
-                            appState.reasoningEffort = model.defaultReasoningEffort.wireValue
-                            refocusDashboardComposerAfterModelMenuSelection()
-                        } label: {
-                            dashboardMenuLabel(
-                                title: model.displayName,
-                                subtitle: model.isDefault ? "Default" : nil,
-                                isSelected: model.id == dashboardCurrentModel?.id
-                            )
-                        }
-                    }
-                }
-            }
-
-            if let currentModel = dashboardCurrentModel,
-               !currentModel.supportedReasoningEfforts.isEmpty {
-                Section("Reasoning") {
-                    ForEach(currentModel.supportedReasoningEfforts) { effort in
-                        let value = effort.reasoningEffort.wireValue
-                        Button {
-                            appState.reasoningEffort = value
-                            refocusDashboardComposerAfterModelMenuSelection()
-                        } label: {
-                            dashboardMenuLabel(
-                                title: value,
-                                subtitle: nil,
-                                isSelected: value == appState.reasoningEffort
-                            )
-                        }
-                    }
-                }
-            }
-
-            Section {
-                Toggle(isOn: dashboardFastModeBinding) {
-                    Label("Fast responses", systemImage: "bolt.fill")
-                }
-            }
-        } label: {
-            Image(systemName: "cpu")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(DashboardTone.textPrimary)
-        }
-        .simultaneousGesture(TapGesture().onEnded {
-            primeDashboardModelMenuInteraction()
-        })
-        .accessibilityLabel("Model settings")
+        ModelSettingsMenuButton(
+            models: dashboardAvailableModels,
+            selectedModel: dashboardSelectedModelBinding,
+            reasoningEffort: dashboardReasoningEffortBinding,
+            currentModel: dashboardCurrentModel,
+            iconFont: .system(size: 15, weight: .semibold),
+            iconForeground: DashboardTone.textPrimary,
+            labelStyle: .toolbarIcon,
+            onOpen: primeDashboardModelMenuInteraction,
+            onSelection: refocusDashboardComposerAfterModelMenuSelection
+        )
     }
 
     private func primeDashboardModelMenuInteraction() {
@@ -916,13 +903,17 @@ struct DashboardScreen: View {
         }
     }
 
-    private var dashboardFastModeBinding: Binding<Bool> {
+    private var dashboardSelectedModelBinding: Binding<String> {
         Binding(
-            get: { fastMode },
-            set: { newValue in
-                fastMode = newValue
-                refocusDashboardComposerAfterModelMenuSelection()
-            }
+            get: { appState.selectedModel },
+            set: { appState.selectedModel = $0 }
+        )
+    }
+
+    private var dashboardReasoningEffortBinding: Binding<String> {
+        Binding(
+            get: { appState.reasoningEffort },
+            set: { appState.reasoningEffort = $0 }
         )
     }
 
@@ -937,17 +928,6 @@ struct DashboardScreen: View {
             return match
         }
         return dashboardAvailableModels.first(where: \.isDefault) ?? dashboardAvailableModels.first
-    }
-
-    @ViewBuilder
-    private func dashboardMenuLabel(title: String, subtitle: String?, isSelected: Bool) -> some View {
-        if isSelected {
-            Label(title, systemImage: "checkmark")
-        } else if let subtitle {
-            Text("\(title) (\(subtitle))")
-        } else {
-            Text(title)
-        }
     }
 
     private var loggedMeals: [(meal: CalorieMealType, items: [CalorieLogItem])] {
@@ -1206,11 +1186,11 @@ struct DashboardScreen: View {
         loggedMeals: Set<CalorieMealType>,
         source: DashboardSuggestionSource
     ) -> Bool {
-        guard !loggedMeals.contains(meal) else { return false }
         if meal == .other { return false }
+        if source == .canonical { return true }
+        guard !loggedMeals.contains(meal) else { return false }
         if meal == .drink { return remainingCalories <= 250 || CalorieMealType.currentDefault == .snack }
         if meal == .snack { return remainingCalories <= 500 || CalorieMealType.currentDefault == .snack }
-        if source == .canonical { return true }
         return meal == CalorieMealType.currentDefault || remainingCalories >= 450
     }
 
@@ -1416,15 +1396,16 @@ struct CalorieLibraryScreen: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
+            VStack(alignment: .leading, spacing: 28) {
+                libraryOverview
                 favoriteSection
                 recentFoodsSection
                 librarySection
                 templateSection
             }
-            .padding(.horizontal, 18)
-            .padding(.top, 12)
-            .padding(.bottom, 20)
+            .padding(.horizontal, 22)
+            .padding(.top, 18)
+            .padding(.bottom, 28)
         }
         .scrollDisabled(drawerController.progress > 0.001)
         .onChange(of: drawerController.progress) { _, progress in
@@ -1519,56 +1500,51 @@ struct CalorieLibraryScreen: View {
         }
     }
 
-    private var libraryHero: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .center, spacing: 14) {
-                Image(systemName: "books.vertical.fill")
-                    .font(.system(size: 21, weight: .bold))
-                    .foregroundStyle(DashboardTone.textPrimary)
-                    .frame(width: 44, height: 44)
-                    .background(DashboardTone.divider, in: Circle())
+    private var libraryOverview: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Library")
-                        .font(.system(size: 34, weight: .bold, design: .rounded))
+                        .font(.system(size: 32, weight: .semibold, design: .rounded))
                         .foregroundStyle(DashboardTone.textPrimary)
-                    Text("Reusable foods, recipes, and meal templates")
-                        .font(.subheadline.weight(.semibold))
+                    Text("Foods, recipes, recent logs, and templates")
+                        .font(.subheadline)
                         .foregroundStyle(DashboardTone.textSecondary)
                 }
-            }
-
-            HStack(spacing: 18) {
-                libraryStat("Foods", "\(store.libraryItems.filter { $0.kind == "food" }.count)", DashboardTone.textPrimary)
-                libraryStat("Recipes", "\(store.libraryItems.filter { $0.kind == "recipe" }.count)", DashboardTone.textPrimary)
-                libraryStat("Favorites", "\(store.libraryItems.filter(\.isFavorite).count)", DashboardTone.textPrimary)
-            }
-            .padding(.top, 2)
-        }
-    }
-
-    private var libraryActions: some View {
-        HStack(spacing: 10) {
-            libraryActionButton(title: "Food or Recipe", icon: "plus.circle.fill", tint: DashboardTone.accent) {
-                activeSheet = .food
-            }
-
-            libraryActionButton(title: "Template", icon: "square.stack.3d.up.fill", tint: DashboardTone.accent) {
-                activeSheet = .template
+                Spacer()
+                Button {
+                    guard canOpenLibrarySheet else { return }
+                    AppHaptics.light()
+                    activeSheet = .search
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(DashboardTone.textPrimary)
+                        .frame(width: 42, height: 42)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Search library")
             }
         }
     }
 
     private var librarySection: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
             librarySectionTitle("Foods & Recipes", count: store.libraryItems.count)
             if store.libraryItems.isEmpty {
-                emptyState("Save reusable foods and recipes here.", icon: "books.vertical")
+                libraryEmptyState("Save reusable foods and recipes here.", icon: "books.vertical")
             } else {
-                ForEach(store.libraryItems) { item in
-                    LibraryItemRow(item: item, store: store) {
-                        guard canOpenLibrarySheet else { return }
-                        AppHaptics.light()
-                        activeSheet = .libraryItem(item)
+                VStack(spacing: 0) {
+                    ForEach(store.libraryItems) { item in
+                        LibraryItemRow(item: item, store: store) {
+                            guard canOpenLibrarySheet else { return }
+                            AppHaptics.light()
+                            activeSheet = .libraryItem(item)
+                        }
+                        if item.id != store.libraryItems.last?.id {
+                            libraryRowDivider
+                        }
                     }
                 }
             }
@@ -1578,7 +1554,7 @@ struct CalorieLibraryScreen: View {
     @ViewBuilder
     private var recentFoodsSection: some View {
         if !store.recentFoodMemories.isEmpty {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     librarySectionTitle("Recent Foods", count: store.recentFoodMemories.count)
                     Spacer()
@@ -1593,12 +1569,18 @@ struct CalorieLibraryScreen: View {
                     .buttonStyle(.plain)
                 }
 
-                ForEach(FoodSearchSupport.rankedRecentFoods(store.recentFoodMemories, preferredMeal: .currentDefault, limit: 10)) { item in
-                    FoodMemoryRow(item: item, onOpen: {
-                        guard canOpenLibrarySheet else { return }
-                        activeSheet = .recentFood(item)
-                    }) {
-                        Task { await store.logCanonicalFood(item.id, mealType: .currentDefault) }
+                let items = FoodSearchSupport.rankedRecentFoods(store.recentFoodMemories, preferredMeal: .currentDefault, limit: 10)
+                VStack(spacing: 0) {
+                    ForEach(items) { item in
+                        FoodMemoryRow(item: item, onOpen: {
+                            guard canOpenLibrarySheet else { return }
+                            activeSheet = .recentFood(item)
+                        }) {
+                            Task { await store.logCanonicalFood(item.id, mealType: .currentDefault) }
+                        }
+                        if item.id != items.last?.id {
+                            libraryRowDivider
+                        }
                     }
                 }
             }
@@ -1606,16 +1588,21 @@ struct CalorieLibraryScreen: View {
     }
 
     private var templateSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
             librarySectionTitle("Meal Templates", count: store.mealTemplates.count)
             if store.mealTemplates.isEmpty {
-                emptyState("Templates are fast repeated meals.", icon: "square.stack.3d.up")
+                libraryEmptyState("Templates are fast repeated meals.", icon: "square.stack.3d.up")
             } else {
-                ForEach(store.mealTemplates) { template in
-                    MealTemplateRow(template: template, store: store) {
-                        guard canOpenLibrarySheet else { return }
-                        AppHaptics.light()
-                        activeSheet = .mealTemplate(template)
+                VStack(spacing: 0) {
+                    ForEach(store.mealTemplates) { template in
+                        MealTemplateRow(template: template, store: store) {
+                            guard canOpenLibrarySheet else { return }
+                            AppHaptics.light()
+                            activeSheet = .mealTemplate(template)
+                        }
+                        if template.id != store.mealTemplates.last?.id {
+                            libraryRowDivider
+                        }
                     }
                 }
             }
@@ -1626,61 +1613,32 @@ struct CalorieLibraryScreen: View {
     private var favoriteSection: some View {
         let favorites = store.libraryItems.filter(\.isFavorite)
         if !favorites.isEmpty {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
                 librarySectionTitle("Favorites", count: favorites.count)
-                ForEach(favorites) { item in
-                    LibraryItemRow(item: item, store: store) {
-                        guard canOpenLibrarySheet else { return }
-                        AppHaptics.light()
-                        activeSheet = .libraryItem(item)
+                VStack(spacing: 0) {
+                    ForEach(favorites) { item in
+                        LibraryItemRow(item: item, store: store) {
+                            guard canOpenLibrarySheet else { return }
+                            AppHaptics.light()
+                            activeSheet = .libraryItem(item)
+                        }
+                        if item.id != favorites.last?.id {
+                            libraryRowDivider
+                        }
                     }
                 }
             }
         }
     }
 
-    private func libraryActionButton(title: String, icon: String, tint: Color, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                Image(systemName: icon)
-                    .font(.system(size: 16, weight: .bold))
-                Text(title)
-                    .font(.subheadline.weight(.bold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
-            }
-            .foregroundStyle(tint)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
-            .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .stroke(tint.opacity(0.25), lineWidth: 1)
-            )
-        }
-        .buttonStyle(.plain)
-    }
-
     private var canOpenLibrarySheet: Bool {
         !drawerController.shouldSuppressContentInteractions
-    }
-
-    private func libraryStat(_ title: String, _ value: String, _ tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(DashboardTone.textSecondary)
-            Text(value)
-                .font(.title3.weight(.bold))
-                .foregroundStyle(tint)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func librarySectionTitle(_ title: String, count: Int) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(title)
-                .font(.title3.weight(.bold))
+                .font(.headline.weight(.semibold))
                 .foregroundStyle(DashboardTone.textPrimary)
             Text("\(count)")
                 .font(.caption.weight(.bold))
@@ -1688,6 +1646,26 @@ struct CalorieLibraryScreen: View {
                 .foregroundStyle(DashboardTone.textSecondary)
             Spacer()
         }
+    }
+
+    private var libraryRowDivider: some View {
+        Divider()
+            .overlay(DashboardTone.textPrimary.opacity(0.08))
+            .padding(.leading, 54)
+    }
+
+    private func libraryEmptyState(_ text: String, icon: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(DashboardTone.textSecondary.opacity(0.74))
+                .frame(width: 36, height: 36)
+            Text(text)
+                .font(.subheadline)
+                .foregroundStyle(DashboardTone.textSecondary)
+            Spacer()
+        }
+        .padding(.vertical, 12)
     }
 }
 
@@ -2715,84 +2693,95 @@ private struct CalorieLogItemDetailSheet: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
                     detailHeader
-                }
 
-                Section("Food") {
+                    detailSection("Food") {
                     TextField("Name", text: $name)
+                        .font(.body.weight(.medium))
                     Picker("Meal", selection: $mealType) {
                         ForEach(CalorieMealType.allCases) { meal in
                             Label(meal.title, systemImage: meal.systemImage).tag(meal)
                         }
                     }
-                }
-
-                Section("Serving") {
-                    servingEditorRow
-                    if servingUnitSupportsWeight {
-                        detailNumberRow("Weight", unit: "g", text: $servingWeight)
                     }
-                }
 
-                Section("Nutrition") {
-                    detailNumberRow("Calories", unit: "kcal", text: $calories)
-                    detailNumberRow("Protein", unit: "g", text: $protein)
-                    detailNumberRow("Carbs", unit: "g", text: $carbs)
-                    detailNumberRow("Fat", unit: "g", text: $fat)
-                }
-
-                if let activeRecipe {
-                    recipeDetailsSection(activeRecipe)
-                }
-
-                Section("Notes") {
-                    TextField("Notes", text: $notes, axis: .vertical)
-                        .lineLimit(2...8)
-                }
-
-                Section("Actions") {
-                    Button {
-                        Task {
-                            AppHaptics.medium()
-                            await store.duplicateLogItem(item.id)
-                            dismiss()
+                    detailSection("Serving") {
+                        servingEditorRow
+                        if servingUnitSupportsWeight {
+                            Divider()
+                            detailNumberRow("Weight", unit: "g", text: $servingWeight)
                         }
-                    } label: {
-                        Label("Duplicate", systemImage: "plus.square.on.square")
                     }
 
-                    Button {
-                        Task {
-                            AppHaptics.medium()
-                            await store.duplicateLogItem(item.id, toToday: true)
-                            dismiss()
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Nutrition").font(.headline)
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                            detailNutritionField("Calories", unit: "kcal", text: $calories)
+                            detailNutritionField("Protein", unit: "g", text: $protein)
+                            detailNutritionField("Carbs", unit: "g", text: $carbs)
+                            detailNutritionField("Fat", unit: "g", text: $fat)
                         }
-                    } label: {
-                        Label("Log Today", systemImage: "calendar.badge.plus")
                     }
-                }
 
-                Section("Move") {
-                    ForEach(CalorieMealType.allCases.filter { $0 != mealType }) { meal in
-                        Button {
+                    if let activeRecipe {
+                        recipeDetailsSection(activeRecipe)
+                    }
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Notes").font(.headline)
+                        TextField("Add a note", text: $notes, axis: .vertical)
+                            .lineLimit(2...6)
+                            .padding(14)
+                            .background(DashboardTone.elevated, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
+
+                    HStack(spacing: 10) {
+                        detailAction("Duplicate", systemImage: "plus.square.on.square") {
                             Task {
-                                AppHaptics.light()
-                                await store.moveLogItem(item.id, to: meal)
+                                AppHaptics.medium()
+                                await store.duplicateLogItem(item.id)
                                 dismiss()
                             }
-                        } label: {
-                            Label(meal.title, systemImage: meal.systemImage)
+                        }
+                        detailAction("Log Today", systemImage: "calendar.badge.plus") {
+                            Task {
+                                AppHaptics.medium()
+                                await store.duplicateLogItem(item.id, toToday: true)
+                                dismiss()
+                            }
                         }
                     }
-                }
 
-                Section {
+                    Menu {
+                        ForEach(CalorieMealType.allCases.filter { $0 != mealType }) { meal in
+                            Button {
+                                Task {
+                                    AppHaptics.light()
+                                    await store.moveLogItem(item.id, to: meal)
+                                    dismiss()
+                                }
+                            } label: {
+                                Label(meal.title, systemImage: meal.systemImage)
+                            }
+                        }
+                    } label: {
+                        Label("Move to another meal", systemImage: "arrow.up.arrow.down")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(14)
+                            .background(DashboardTone.elevated, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
+
                     Button("Delete Food Log", role: .destructive) {
                         showDeleteConfirmation = true
                     }
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 4)
                 }
+                .padding(.horizontal, 18)
+                .padding(.top, 12)
+                .padding(.bottom, 30)
             }
             .scrollDismissesKeyboard(.interactively)
             .tint(DashboardTone.textPrimary)
@@ -2819,25 +2808,7 @@ private struct CalorieLogItemDetailSheet: View {
                     .accessibilityLabel(activeItem.isFavorite ? "Remove favorite" : "Favorite")
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button {
-                        Task {
-                            AppHaptics.medium()
-                            await store.updateLogItem(
-                                item.id,
-                                name: name,
-                                calories: calories.doubleValue,
-                                protein: protein.doubleValue,
-                                carbs: carbs.doubleValue,
-                                fat: fat.doubleValue,
-                                servingCount: servingQuantity.optionalDouble,
-                                unit: servingUnit,
-                                weight: servingWeight.optionalDouble,
-                                notes: notes,
-                                mealType: mealType
-                            )
-                            dismiss()
-                        }
-                    } label: {
+                    Button(action: saveChanges) {
                         Image(systemName: "checkmark")
                     }
                     .accessibilityLabel("Save")
@@ -2880,9 +2851,70 @@ private struct CalorieLogItemDetailSheet: View {
         .padding(.vertical, 4)
     }
 
+    private func detailSection<Content: View>(
+        _ title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title).font(.headline)
+            VStack(alignment: .leading, spacing: 12) {
+                content()
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(DashboardTone.elevated, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+    }
+
+    private func detailNutritionField(_ title: String, unit: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title).font(.caption).foregroundStyle(DashboardTone.textSecondary)
+            HStack(spacing: 4) {
+                TextField("0", text: text)
+                    .keyboardType(.decimalPad)
+                    .font(.body.weight(.semibold))
+                    .monospacedDigit()
+                Text(unit).font(.caption).foregroundStyle(DashboardTone.textSecondary)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
+        .background(DashboardTone.elevated, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func detailAction(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity)
+                .frame(height: 46)
+        }
+        .buttonStyle(.bordered)
+    }
+
+    private func saveChanges() {
+        Task {
+            AppHaptics.medium()
+            await store.updateLogItem(
+                item.id,
+                name: name,
+                calories: calories.doubleValue,
+                protein: protein.doubleValue,
+                carbs: carbs.doubleValue,
+                fat: fat.doubleValue,
+                servingCount: servingQuantity.optionalDouble,
+                unit: servingUnit,
+                weight: servingWeight.optionalDouble,
+                notes: notes,
+                mealType: mealType
+            )
+            dismiss()
+        }
+    }
+
     @ViewBuilder
     private func recipeDetailsSection(_ recipe: CalorieLibraryItem) -> some View {
-        Section("Recipe") {
+        detailSection("Recipe") {
             HStack(spacing: 12) {
                 FoodIconView(foodName: recipe.name, fallbackSystemName: "list.bullet.clipboard", size: 36)
                 VStack(alignment: .leading, spacing: 3) {
@@ -3358,8 +3390,7 @@ private struct LibraryItemRow: View {
                     .accessibilityLabel("Log \(item.name) today")
                 }
             }
-            .padding(14)
-            .background(cardBackground(cornerRadius: 20))
+            .padding(.vertical, 11)
         }
         .contextMenu {
             Button(action: onOpen) {
@@ -3436,8 +3467,7 @@ private struct FoodMemoryRow: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Log \(item.displayName)")
         }
-        .padding(14)
-        .background(cardBackground(cornerRadius: 20))
+        .padding(.vertical, 11)
     }
 }
 
@@ -4473,8 +4503,7 @@ private struct MealTemplateRow: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Log \(template.name) today")
         }
-        .padding(14)
-        .background(cardBackground(cornerRadius: 20))
+        .padding(.vertical, 11)
         .contextMenu {
             Button(action: onOpen) {
                 Label("View Details", systemImage: "info.circle")
@@ -4510,6 +4539,14 @@ private struct MealTemplateRow: View {
 }
 
 struct CalorieLogFoodSheet: View {
+    private enum EntryMode: String, CaseIterable, Identifiable {
+        case describe
+        case manual
+
+        var id: String { rawValue }
+        var title: String { rawValue.capitalized }
+    }
+
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var store: CalorieTrackerStore
     let title: String
@@ -4532,6 +4569,13 @@ struct CalorieLogFoodSheet: View {
     @State private var selectedLibraryID = ""
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var photoData: Data?
+    @State private var entryMode: EntryMode = .describe
+    @State private var foodDescription = ""
+    @State private var isEstimating = false
+    @State private var estimateError: String?
+    @State private var hasGeneratedEstimate = false
+    @State private var estimateRetryNonce = 0
+    @State private var isSaving = false
 
     init(
         store: CalorieTrackerStore,
@@ -4556,103 +4600,359 @@ struct CalorieLogFoodSheet: View {
         _notes = State(initialValue: scannedLabel?.notes ?? "")
         _source = State(initialValue: scannedLabel?.sourceTitle ?? "Nutrition label scan")
         _photoData = State(initialValue: photoData)
+        _entryMode = State(initialValue: scannedLabel == nil ? .describe : .manual)
     }
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Food") {
-                    Picker("Meal", selection: $mealType) {
-                        ForEach(CalorieMealType.allCases) { meal in
-                            Label(meal.title, systemImage: meal.systemImage).tag(meal)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    Picker("Entry mode", selection: $entryMode) {
+                        ForEach(EntryMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
                         }
                     }
-                    Picker("From library", selection: $selectedLibraryID) {
-                        Text("None").tag("")
-                        ForEach(store.libraryItems) { item in
-                            Text(item.name).tag(item.id)
+                    .pickerStyle(.segmented)
+
+                    mealSelector
+
+                    if entryMode == .describe {
+                        smartDescriptionEditor
+                        if hasGeneratedEstimate {
+                            estimatePreview
                         }
-                    }
-                    .onChange(of: selectedLibraryID) { _, id in
-                        guard let item = store.libraryItems.first(where: { $0.id == id }) else { return }
-                        name = item.name
-                        calories = item.calories.cleanString
-                        protein = item.protein.cleanString
-                        carbs = item.carbs.cleanString
-                        fat = item.fat.cleanString
-                        servingQty = item.defaultServingQty?.cleanString ?? "1"
-                        servingUnit = item.defaultServingUnit ?? "serving"
-                        servingWeight = item.defaultServingWeight?.cleanString ?? ""
-                    }
-                    HStack(spacing: 12) {
-                        FoodIconView(foodName: name, size: 36)
-                        TextField("Name", text: $name)
-                    }
-                    numericField("Serving", text: $servingQty)
-                    TextField("Serving unit", text: $servingUnit)
-                    numericField("Serving weight (g)", text: $servingWeight)
-                    numericField("Calories", text: $calories)
-                    Toggle("Save to library", isOn: $saveToLibrary)
-                }
-
-                Section("Macros") {
-                    numericField("Protein (g)", text: $protein)
-                    numericField("Carbs (g)", text: $carbs)
-                    numericField("Fat (g)", text: $fat)
-                }
-
-                Section("Optional") {
-                    numericField("Fiber (g)", text: $fiber)
-                    numericField("Sugars (g)", text: $sugars)
-                    numericField("Sodium (mg)", text: $sodium)
-                    numericField("Potassium (mg)", text: $potassium)
-                    TextField("Source", text: $source)
-                    TextField("Notes", text: $notes, axis: .vertical)
-                    PhotosPicker(selection: $selectedPhoto, matching: .images) {
-                        Label(photoData == nil ? "Attach Photo" : "Photo Attached", systemImage: "photo.on.rectangle")
+                    } else {
+                        manualEditor
                     }
                 }
+                .padding(.horizontal, 18)
+                .padding(.top, 14)
+                .padding(.bottom, 24)
             }
             .scrollDismissesKeyboard(.interactively)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                Button(action: saveFood) {
+                    HStack(spacing: 9) {
+                        if isSaving {
+                            ProgressView().controlSize(.small)
+                        }
+                        Text(isSaving ? "Logging" : "Log food")
+                            .font(.headline)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 50)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(DashboardTone.accent)
+                .disabled(!canSave || isSaving)
+                .padding(.horizontal, 18)
+                .padding(.top, 10)
+                .padding(.bottom, 10)
+                .background(.bar)
+            }
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        AppHaptics.medium()
-                        Task {
-                            await store.logFood(
-                                name: name,
-                                calories: calories.doubleValue,
-                                protein: protein.optionalDouble,
-                                carbs: carbs.optionalDouble,
-                                fat: fat.optionalDouble,
-                                fiber: fiber.optionalDouble,
-                                sugars: sugars.optionalDouble,
-                                sodium: sodium.optionalDouble,
-                                potassium: potassium.optionalDouble,
-                                notes: notes,
-                                sourceTitle: source,
-                                mealType: mealType,
-                                photoData: photoData,
-                                saveToLibrary: saveToLibrary,
-                                servingQty: servingQty.optionalDouble ?? 1,
-                                servingUnit: servingUnit,
-                                servingWeight: servingWeight.optionalDouble
-                            )
-                            dismiss()
-                        }
-                    }
-                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || calories.doubleValue <= 0)
-                }
+            }
+            .task(id: "\(foodDescription)|\(estimateRetryNonce)") {
+                await estimateDescriptionAfterDebounce()
             }
             .task(id: selectedPhoto) {
                 guard let selectedPhoto else { return }
                 photoData = try? await selectedPhoto.loadTransferable(type: Data.self)
             }
+            .onChange(of: selectedLibraryID) { _, id in
+                applyLibraryItem(id: id)
+            }
+        }
+    }
+
+    private var canSave: Bool {
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && calories.doubleValue > 0
+    }
+
+    private var mealSelector: some View {
+        HStack(spacing: 12) {
+            Label("Meal", systemImage: mealType.systemImage)
+                .font(.subheadline.weight(.semibold))
+            Spacer()
+            Picker("Meal", selection: $mealType) {
+                ForEach(CalorieMealType.allCases) { meal in
+                    Text(meal.title).tag(meal)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 48)
+        .background(DashboardTone.elevated, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private var smartDescriptionEditor: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Describe what you ate")
+                .font(.headline)
+            ZStack(alignment: .bottomTrailing) {
+                TextField(
+                    "Example: two eggs, one slice of sourdough with butter, and a small latte",
+                    text: $foodDescription,
+                    axis: .vertical
+                )
+                .lineLimit(4...8)
+                .padding(14)
+                .padding(.bottom, 26)
+                .background(DashboardTone.elevated, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+                HStack(spacing: 7) {
+                    if isEstimating {
+                        ProgressView().controlSize(.mini)
+                        Text("Estimating")
+                    } else {
+                        Image(systemName: "apple.intelligence")
+                        Text(hasGeneratedEstimate ? "Updated" : "On-device")
+                    }
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(DashboardTone.textSecondary)
+                .padding(.horizontal, 13)
+                .padding(.bottom, 10)
+            }
+
+            if let estimateError {
+                Label(estimateError, systemImage: "exclamationmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(DashboardTone.textSecondary)
+                HStack(spacing: 18) {
+                    Button("Try again") {
+                        estimateRetryNonce += 1
+                    }
+                    Button("Enter manually") {
+                        entryMode = .manual
+                    }
+                }
+                .font(.subheadline.weight(.semibold))
+            } else if !hasGeneratedEstimate {
+                Text("Macrodex estimates the portion after you pause typing. You can review every value before logging.")
+                    .font(.caption)
+                    .foregroundStyle(DashboardTone.textSecondary)
+            }
+        }
+    }
+
+    private var estimatePreview: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 14) {
+                FoodIconView(foodName: name, size: 52)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(name)
+                        .font(.headline)
+                    Text("\(servingQty) \(servingUnit) · \(Int(calories.doubleValue)) kcal")
+                        .font(.subheadline)
+                        .foregroundStyle(DashboardTone.textSecondary)
+                }
+                Spacer()
+                Button("Edit") {
+                    entryMode = .manual
+                }
+                .font(.subheadline.weight(.semibold))
+            }
+
+            HStack(spacing: 10) {
+                macroPreview("Protein", value: protein, tint: .blue)
+                macroPreview("Carbs", value: carbs, tint: .green)
+                macroPreview("Fat", value: fat, tint: .orange)
+            }
+        }
+        .padding(16)
+        .background(DashboardTone.elevated, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private var manualEditor: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Food").font(.headline)
+                HStack(spacing: 12) {
+                    FoodIconView(foodName: name, size: 44)
+                    TextField("Food name", text: $name)
+                        .font(.body.weight(.medium))
+                }
+                .padding(14)
+                .background(DashboardTone.elevated, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                Picker("From library", selection: $selectedLibraryID) {
+                    Text("Choose from library").tag("")
+                    ForEach(store.libraryItems) { item in
+                        Text(item.name).tag(item.id)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Serving").font(.headline)
+                HStack(spacing: 10) {
+                    compactNumberField("Quantity", unit: nil, text: $servingQty)
+                    compactTextField("Unit", text: $servingUnit)
+                    compactNumberField("Weight", unit: "g", text: $servingWeight)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Nutrition").font(.headline)
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                    compactNumberField("Calories", unit: "kcal", text: $calories)
+                    compactNumberField("Protein", unit: "g", text: $protein)
+                    compactNumberField("Carbs", unit: "g", text: $carbs)
+                    compactNumberField("Fat", unit: "g", text: $fat)
+                    compactNumberField("Fiber", unit: "g", text: $fiber)
+                    compactNumberField("Sugars", unit: "g", text: $sugars)
+                    compactNumberField("Sodium", unit: "mg", text: $sodium)
+                    compactNumberField("Potassium", unit: "mg", text: $potassium)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("More").font(.headline)
+                TextField("Notes", text: $notes, axis: .vertical)
+                    .lineLimit(2...5)
+                    .padding(12)
+                    .background(DashboardTone.elevated, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                TextField("Source", text: $source)
+                    .padding(12)
+                    .background(DashboardTone.elevated, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                Toggle("Save to library", isOn: $saveToLibrary)
+                PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                    Label(photoData == nil ? "Attach photo" : "Photo attached", systemImage: "photo.on.rectangle")
+                }
+            }
+        }
+    }
+
+    private func macroPreview(_ title: String, value: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(DashboardTone.textSecondary)
+            Text("\(value.doubleValue.formatted(.number.precision(.fractionLength(0...1))))g")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(tint)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func compactNumberField(_ title: String, unit: String?, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title).font(.caption).foregroundStyle(DashboardTone.textSecondary)
+            HStack(spacing: 4) {
+                TextField("0", text: text)
+                    .keyboardType(.decimalPad)
+                    .font(.body.weight(.semibold))
+                if let unit {
+                    Text(unit).font(.caption).foregroundStyle(DashboardTone.textSecondary)
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
+        .background(DashboardTone.elevated, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func compactTextField(_ title: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title).font(.caption).foregroundStyle(DashboardTone.textSecondary)
+            TextField("serving", text: text)
+                .font(.body.weight(.semibold))
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
+        .background(DashboardTone.elevated, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    @MainActor
+    private func estimateDescriptionAfterDebounce() async {
+        let description = foodDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard entryMode == .describe, description.count >= 3 else {
+            isEstimating = false
+            estimateError = nil
+            hasGeneratedEstimate = false
+            return
+        }
+        do {
+            try await Task.sleep(for: .seconds(2.4))
+            guard !Task.isCancelled else { return }
+            isEstimating = true
+            estimateError = nil
+            let estimate = try await FoodNutritionEstimator.estimate(description: description)
+            guard !Task.isCancelled else { return }
+            applyEstimate(estimate)
+            hasGeneratedEstimate = true
+        } catch is CancellationError {
+            return
+        } catch {
+            estimateError = error.localizedDescription
+            hasGeneratedEstimate = false
+        }
+        isEstimating = false
+    }
+
+    private func applyEstimate(_ estimate: FoodNutritionEstimate) {
+        name = estimate.name
+        calories = estimate.calories.cleanString
+        protein = estimate.protein.cleanString
+        carbs = estimate.carbs.cleanString
+        fat = estimate.fat.cleanString
+        fiber = estimate.fiber.cleanString
+        sugars = estimate.sugars.cleanString
+        sodium = estimate.sodium.cleanString
+        potassium = estimate.potassium.cleanString
+        servingQty = estimate.servingQuantity.cleanString
+        servingUnit = estimate.servingUnit
+        servingWeight = estimate.servingWeight?.cleanString ?? ""
+        notes = estimate.notes
+        source = "Apple Foundation Models estimate"
+    }
+
+    private func applyLibraryItem(id: String) {
+        guard let item = store.libraryItems.first(where: { $0.id == id }) else { return }
+        name = item.name
+        calories = item.calories.cleanString
+        protein = item.protein.cleanString
+        carbs = item.carbs.cleanString
+        fat = item.fat.cleanString
+        servingQty = item.defaultServingQty?.cleanString ?? "1"
+        servingUnit = item.defaultServingUnit ?? "serving"
+        servingWeight = item.defaultServingWeight?.cleanString ?? ""
+    }
+
+    private func saveFood() {
+        guard canSave, !isSaving else { return }
+        AppHaptics.medium()
+        isSaving = true
+        Task {
+            await store.logFood(
+                name: name,
+                calories: calories.doubleValue,
+                protein: protein.optionalDouble,
+                carbs: carbs.optionalDouble,
+                fat: fat.optionalDouble,
+                fiber: fiber.optionalDouble,
+                sugars: sugars.optionalDouble,
+                sodium: sodium.optionalDouble,
+                potassium: potassium.optionalDouble,
+                notes: notes,
+                sourceTitle: source,
+                mealType: mealType,
+                photoData: photoData,
+                saveToLibrary: saveToLibrary,
+                servingQty: servingQty.optionalDouble ?? 1,
+                servingUnit: servingUnit,
+                servingWeight: servingWeight.optionalDouble
+            )
+            dismiss()
         }
     }
 }
@@ -6093,6 +6393,7 @@ struct FoodIconView: View {
     let foodName: String
     var fallbackSystemName = "fork.knife"
     var size: CGFloat = 42
+    var showsBackground = false
 
     private var isDefaultIcon: Bool {
         matchedImage == nil
@@ -6100,18 +6401,20 @@ struct FoodIconView: View {
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: max(12, size * 0.28), style: .continuous)
-                .fill(DashboardTone.elevated)
-                .overlay(
-                    RoundedRectangle(cornerRadius: max(12, size * 0.28), style: .continuous)
-                        .stroke(DashboardTone.textPrimary.opacity(0.10), lineWidth: 1)
-                )
+            if showsBackground {
+                RoundedRectangle(cornerRadius: max(12, size * 0.28), style: .continuous)
+                    .fill(DashboardTone.elevated)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: max(12, size * 0.28), style: .continuous)
+                            .stroke(DashboardTone.textPrimary.opacity(0.10), lineWidth: 1)
+                    )
+            }
 
             if let image = matchedImage {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFit()
-                    .padding(size * 0.16)
+                    .padding(showsBackground ? size * 0.16 : size * 0.03)
             } else {
                 Image(systemName: fallbackSystemName)
                     .font(.system(size: size * 0.40, weight: .semibold))
@@ -6562,23 +6865,25 @@ private struct HealthKitNutritionDayBreakdown: Equatable {
         macrodexTotals.hasNutrition || otherAppTotals.hasNutrition
     }
 
-    func reconciledTotals(localTotals: CalorieTotals) -> CalorieTotals {
-        CalorieTotals(
-            calories: max(localTotals.calories, macrodexTotals.calories) + otherAppTotals.calories,
-            protein: max(localTotals.protein, macrodexTotals.protein) + otherAppTotals.protein,
-            carbs: max(localTotals.carbs, macrodexTotals.carbs) + otherAppTotals.carbs,
-            fat: max(localTotals.fat, macrodexTotals.fat) + otherAppTotals.fat
+    func reconciledTotals(localTotals: CalorieTotals, localLogCount: Int) -> CalorieTotals {
+        let macrodexRecoveryTotals = localLogCount > 0 ? CalorieTotals() : macrodexTotals
+        return CalorieTotals(
+            calories: max(localTotals.calories, macrodexRecoveryTotals.calories) + otherAppTotals.calories,
+            protein: max(localTotals.protein, macrodexRecoveryTotals.protein) + otherAppTotals.protein,
+            carbs: max(localTotals.carbs, macrodexRecoveryTotals.carbs) + otherAppTotals.carbs,
+            fat: max(localTotals.fat, macrodexRecoveryTotals.fat) + otherAppTotals.fat
         )
     }
 
-    func sourceNote(localTotals: CalorieTotals, reconciledTotals: CalorieTotals) -> String? {
+    func sourceNote(localTotals: CalorieTotals, localLogCount: Int, reconciledTotals: CalorieTotals) -> String? {
         guard hasHealthKitNutrition, reconciledTotals.hasNutrition else { return nil }
-        let usesMacrodexHealthHistory =
+        let usesMacrodexHealthHistory = localLogCount == 0 && (
             macrodexTotals.calories > localTotals.calories + 0.5 ||
             macrodexTotals.protein > localTotals.protein + 0.5 ||
             macrodexTotals.carbs > localTotals.carbs + 0.5 ||
             macrodexTotals.fat > localTotals.fat + 0.5 ||
             (!localTotals.hasNutrition && macrodexTotals.hasNutrition)
+        )
         let usesOtherApps = otherAppTotals.hasNutrition
 
         switch (usesMacrodexHealthHistory, usesOtherApps) {
@@ -6663,6 +6968,13 @@ private final class HealthKitNutritionReconciler {
     }
 
     private func requestNutritionReadAuthorizationIfNeeded() async -> String? {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["MACRODEX_SKIP_HEALTHKIT_AUTH_PROMPT"] == "1" {
+            nutritionReadAuthorizationNote = "Apple Health nutrition access skipped for UI automation"
+            return nutritionReadAuthorizationNote
+        }
+        #endif
+
         guard !hasRequestedNutritionReadAuthorization else {
             return nutritionReadAuthorizationNote
         }
@@ -7880,11 +8192,12 @@ final class CalorieTrackerStore: ObservableObject {
                 endDateExclusive: end
             )
             let healthBreakdown = healthResult.breakdowns[dateKey]
+            let logs = try loadLogItems(dateKey: dateKey)
             return CalorieLoggedDaySummary(
                 dateKey: dateKey,
-                totals: healthBreakdown?.reconciledTotals(localTotals: localTotals) ?? localTotals,
+                totals: healthBreakdown?.reconciledTotals(localTotals: localTotals, localLogCount: logs.count) ?? localTotals,
                 goal: try loadGoal(forDateKey: dateKey),
-                logs: try loadLogItems(dateKey: dateKey)
+                logs: logs
             )
         } catch {
             errorMessage = error.localizedDescription
@@ -8159,7 +8472,10 @@ final class CalorieTrackerStore: ObservableObject {
                 localSummary = (try? loadDaySummary(dateKey: dateKey)) ?? CalorieDaySummary()
             }
 
-            let reconciledTotals = breakdown.reconciledTotals(localTotals: localSummary.totals)
+            let reconciledTotals = breakdown.reconciledTotals(
+                localTotals: localSummary.totals,
+                localLogCount: localSummary.logCount
+            )
             guard reconciledTotals != localSummary.totals else {
                 continue
             }
@@ -8175,6 +8491,7 @@ final class CalorieTrackerStore: ObservableObject {
                 todayTotals = reconciledTotals
                 nutritionDataSourceNote = breakdown.sourceNote(
                     localTotals: localSelectedTotals,
+                    localLogCount: localSelectedLogCount,
                     reconciledTotals: reconciledTotals
                 )
             }
@@ -10261,6 +10578,7 @@ enum MacrodexIntentSection: String, AppEnum {
 enum MacrodexFoodSpotlight {
     static let logTodayActionIdentifier = "com.dj.macrodex.food.logToday"
     static let pendingFoodIDKey = "spotlight.pendingFoodID"
+    static let pendingFoodQueryKey = "appIntent.pendingFoodQuery"
 
     static func canonicalEntityID(_ id: String) -> String {
         "canonical:\(id)"
@@ -10425,6 +10743,85 @@ struct MacrodexLoggedFoodEntityQuery: EntityQuery {
     }
 }
 
+struct MacrodexDailyFoodSummaryEntity: AppEntity {
+    static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "Daily Food Summary")
+    static var defaultQuery = MacrodexDailyFoodSummaryEntityQuery()
+
+    let id: String
+
+    @Property(title: "Date")
+    var date: String
+
+    @Property(title: "Foods")
+    var foods: String
+
+    @Property(title: "Item Count")
+    var itemCount: Int
+
+    @Property(title: "Calories")
+    var calories: Double
+
+    @Property(title: "Calorie Goal")
+    var calorieGoal: Double
+
+    @Property(title: "Protein")
+    var protein: Double
+
+    @Property(title: "Protein Goal")
+    var proteinGoal: Double
+
+    @Property(title: "Carbs")
+    var carbs: Double
+
+    @Property(title: "Fat")
+    var fat: Double
+
+    init(
+        id: String,
+        date: String,
+        foods: String,
+        itemCount: Int,
+        calories: Double,
+        calorieGoal: Double,
+        protein: Double,
+        proteinGoal: Double,
+        carbs: Double,
+        fat: Double
+    ) {
+        self.id = id
+        self.date = date
+        self.foods = foods
+        self.itemCount = itemCount
+        self.calories = calories
+        self.calorieGoal = calorieGoal
+        self.protein = protein
+        self.proteinGoal = proteinGoal
+        self.carbs = carbs
+        self.fat = fat
+    }
+
+    var displayRepresentation: DisplayRepresentation {
+        DisplayRepresentation(
+            title: "\(date)",
+            subtitle: "\(Int(calories.rounded())) of \(Int(calorieGoal.rounded())) kcal · \(itemCount) item\(itemCount == 1 ? "" : "s")",
+            image: .init(systemName: "list.bullet.clipboard.fill")
+        )
+    }
+}
+
+struct MacrodexDailyFoodSummaryEntityQuery: EntityQuery {
+    func entities(for identifiers: [MacrodexDailyFoodSummaryEntity.ID]) async throws -> [MacrodexDailyFoodSummaryEntity] {
+        let response = await MacrodexIntentBridge.todayFoodEntities()
+        let ids = Set(identifiers)
+        return ids.contains(response.summary.id) ? [response.summary] : []
+    }
+
+    func suggestedEntities() async throws -> [MacrodexDailyFoodSummaryEntity] {
+        let response = await MacrodexIntentBridge.todayFoodEntities()
+        return [response.summary]
+    }
+}
+
 struct MacrodexOpenIntent: AppIntent {
     static var title: LocalizedStringResource = "Open Macrodex"
     static var description = IntentDescription("Open Macrodex to a specific calorie tracking area.")
@@ -10449,14 +10846,14 @@ struct MacrodexOpenIntent: AppIntent {
 
 struct MacrodexLogFoodIntent: AppIntent {
     static var title: LocalizedStringResource = "Log Food"
-    static var description = IntentDescription("Log a food with calories and optional macros.")
-    static var openAppWhenRun = false
+    static var description = IntentDescription("Log a food by name, using a clear Macrodex match when possible or opening food search when more detail is needed.")
+    static var openAppWhenRun = true
 
     @Parameter(title: "Food")
     var foodName: String
 
     @Parameter(title: "Calories")
-    var calories: Double
+    var calories: Double?
 
     @Parameter(title: "Meal")
     var meal: MacrodexIntentMeal
@@ -10472,7 +10869,7 @@ struct MacrodexLogFoodIntent: AppIntent {
 
     init() {
         foodName = ""
-        calories = 0
+        calories = nil
         meal = .snack
         protein = nil
         carbs = nil
@@ -10481,25 +10878,33 @@ struct MacrodexLogFoodIntent: AppIntent {
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let loggedName = foodName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !loggedName.isEmpty, calories > 0 else {
-            return .result(dialog: "I need a food name and calories to log it.")
+        guard !loggedName.isEmpty else {
+            await MacrodexIntentBridge.requestFoodSearch(query: "")
+            return .result(dialog: "Opening Macrodex to log food.")
         }
-        await MacrodexIntentBridge.logFood(
-            name: loggedName,
-            calories: calories,
-            protein: protein,
-            carbs: carbs,
-            fat: fat,
-            meal: meal
-        )
-        return .result(dialog: "Logged \(loggedName) for \(meal.rawValue).")
+        if let calories, calories > 0 {
+            await MacrodexIntentBridge.logFood(
+                name: loggedName,
+                calories: calories,
+                protein: protein,
+                carbs: carbs,
+                fat: fat,
+                meal: meal
+            )
+            return .result(dialog: "Logged \(loggedName) for \(meal.rawValue).")
+        }
+        if let matchedName = await MacrodexIntentBridge.logBestMatchFood(name: loggedName, meal: meal) {
+            return .result(dialog: "Logged \(matchedName) for \(meal.rawValue).")
+        }
+        await MacrodexIntentBridge.requestFoodSearch(query: loggedName)
+        return .result(dialog: "Opening Macrodex to finish logging \(loggedName).")
     }
 }
 
 struct MacrodexLogFrequentFoodIntent: AppIntent {
     static var title: LocalizedStringResource = "Log Frequent Food"
     static var description = IntentDescription("Log one of your frequent or recently logged foods.")
-    static var openAppWhenRun = false
+    static var openAppWhenRun = true
 
     @Parameter(title: "Food")
     var food: MacrodexFoodEntity
@@ -10534,12 +10939,12 @@ struct MacrodexProgressIntent: AppIntent {
 
 struct MacrodexTodayFoodIntent: AppIntent {
     static var title: LocalizedStringResource = "Get Today's Food"
-    static var description = IntentDescription("Return the foods logged in Macrodex today with meal, serving, calories, and macros.")
+    static var description = IntentDescription("Return a structured summary of foods logged in Macrodex today with calories and macros.")
     static var openAppWhenRun = false
 
-    func perform() async throws -> some IntentResult & ReturnsValue<[MacrodexLoggedFoodEntity]> & ProvidesDialog {
+    func perform() async throws -> some IntentResult & ReturnsValue<MacrodexDailyFoodSummaryEntity> & ProvidesDialog {
         let response = await MacrodexIntentBridge.todayFoodEntities()
-        return .result(value: response.items, dialog: IntentDialog(stringLiteral: response.dialog))
+        return .result(value: response.summary, dialog: IntentDialog(stringLiteral: response.dialog))
     }
 }
 
@@ -10625,6 +11030,8 @@ struct MacrodexAppShortcuts: AppShortcutsProvider {
         AppShortcut(
             intent: MacrodexLogFrequentFoodIntent(),
             phrases: [
+                "Log \(\.$food) in \(.applicationName)",
+                "Track \(\.$food) in \(.applicationName)",
                 "Log frequent food in \(.applicationName)",
                 "Track recent food with \(.applicationName)"
             ],
@@ -10644,8 +11051,10 @@ struct MacrodexAppShortcuts: AppShortcutsProvider {
             intent: MacrodexTodayFoodIntent(),
             phrases: [
                 "What did I eat today in \(.applicationName)",
+                "What did I eat with \(.applicationName)",
                 "What have I eaten today in \(.applicationName)",
-                "Show today's food in \(.applicationName)"
+                "Show today's food in \(.applicationName)",
+                "Ask \(.applicationName) what I ate today"
             ],
             shortTitle: "Today's Food",
             systemImageName: "list.bullet.clipboard.fill"
@@ -10764,6 +11173,7 @@ enum MacrodexFoodSpotlightIndexer {
 private enum MacrodexIntentBridge {
     struct TodayFoodResponse {
         let items: [MacrodexLoggedFoodEntity]
+        let summary: MacrodexDailyFoodSummaryEntity
         let dialog: String
     }
 
@@ -10806,6 +11216,19 @@ private enum MacrodexIntentBridge {
 
         let calories = Int(summary.totals.calories.rounded())
         let goal = Int(summary.goal.calories.rounded())
+        let foodNames = items.map(\.name).joined(separator: ", ")
+        let summaryEntity = MacrodexDailyFoodSummaryEntity(
+            id: "today",
+            date: "Today",
+            foods: foodNames.isEmpty ? "No foods logged" : foodNames,
+            itemCount: items.count,
+            calories: summary.totals.calories,
+            calorieGoal: summary.goal.calories,
+            protein: summary.totals.protein,
+            proteinGoal: summary.goal.protein,
+            carbs: summary.totals.carbs,
+            fat: summary.totals.fat
+        )
         let dialog: String
         if items.isEmpty {
             dialog = "No foods are logged in Macrodex today."
@@ -10815,7 +11238,7 @@ private enum MacrodexIntentBridge {
             let suffix = extraCount > 0 ? ", plus \(extraCount) more" : ""
             dialog = "Today you logged \(items.count) item\(items.count == 1 ? "" : "s"): \(names)\(suffix). Total is \(calories) of \(goal) calories."
         }
-        return TodayFoodResponse(items: items, dialog: dialog)
+        return TodayFoodResponse(items: items, summary: summaryEntity, dialog: dialog)
     }
 
     static func logFood(
@@ -10852,6 +11275,34 @@ private enum MacrodexIntentBridge {
         default:
             await CalorieTrackerStore.shared.logCanonicalFood(parsed.rawID, mealType: meal.calorieMealType)
         }
+    }
+
+    static func logBestMatchFood(name: String, meal: MacrodexIntentMeal) async -> String? {
+        let store = CalorieTrackerStore.shared
+        await store.refresh()
+        let normalizedQuery = normalizedFoodName(name)
+        guard !normalizedQuery.isEmpty else { return nil }
+
+        if let item = store.libraryItems.first(where: { item in
+            normalizedFoodName(item.name) == normalizedQuery
+                || item.aliases.contains { normalizedFoodName($0) == normalizedQuery }
+        }) {
+            await store.logLibraryItem(item.id, mealType: meal.calorieMealType)
+            return item.name
+        }
+
+        let canonicalMatches = await store.loadCanonicalFoods(query: name, limit: 5, offset: 0)
+        let exactCanonical = canonicalMatches.first { item in
+            normalizedFoodName(item.title) == normalizedQuery
+                || normalizedFoodName(item.displayName) == normalizedQuery
+                || normalizedFoodName(item.canonicalName) == normalizedQuery
+        }
+        if let exactCanonical {
+            await store.logCanonicalFood(exactCanonical.id, mealType: meal.calorieMealType)
+            return exactCanonical.title
+        }
+
+        return nil
     }
 
     static func progressSummary() async -> String {
@@ -10893,6 +11344,20 @@ private enum MacrodexIntentBridge {
     static func requestOpen(section: MacrodexIntentSection) async {
         UserDefaults(suiteName: MacrodexPalette.appGroupSuite)?
             .set(section.rawValue, forKey: "appIntent.pendingSection")
+    }
+
+    static func requestFoodSearch(query: String) async {
+        guard let defaults = UserDefaults(suiteName: MacrodexPalette.appGroupSuite) else { return }
+        defaults.set(MacrodexIntentSection.foodSearch.rawValue, forKey: "appIntent.pendingSection")
+        defaults.set(query, forKey: MacrodexFoodSpotlight.pendingFoodQueryKey)
+    }
+
+    private static func normalizedFoodName(_ value: String) -> String {
+        value
+            .lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
     }
 }
 

@@ -252,10 +252,13 @@ struct ConversationToolbarControls: View {
     @Environment(AppModel.self) private var appModel
     let thread: AppThreadSnapshot
     let control: Control
-    @State private var showModelSelector = false
 
     private var server: AppServerSnapshot? {
         appModel.snapshot?.serverSnapshot(for: thread.key.serverId)
+    }
+
+    private var availableModels: [ModelInfo] {
+        appModel.availableModels(for: thread.key.serverId)
     }
 
     var body: some View {
@@ -265,29 +268,29 @@ struct ConversationToolbarControls: View {
                 modelSettingsButton
             }
         }
-        .frame(width: 28, height: 28)
-        .contentShape(Rectangle())
-        .buttonStyle(.plain)
-        .sheet(isPresented: $showModelSelector) {
-            ModelSelectorSheet(
-                models: server?.availableModels ?? [],
-                selectedModel: selectedModelBinding,
-                reasoningEffort: reasoningEffortBinding
-            )
-            .presentationDetents([.medium])
-            .presentationDragIndicator(.visible)
+        .task(id: thread.key) {
+            await appModel.loadConversationMetadataIfNeeded(serverId: thread.key.serverId)
         }
     }
 
     private var modelSettingsButton: some View {
-        Button {
-            showModelSelector = true
-        } label: {
-            Image(systemName: "gearshape")
-                .font(MacrodexFont.styled(size: 16, weight: .semibold))
-                .foregroundStyle(.primary)
-        }
+        ModelSettingsMenuButton(
+            models: availableModels,
+            selectedModel: selectedModelBinding,
+            reasoningEffort: reasoningEffortBinding,
+            currentModel: currentModel,
+            iconForeground: .primary,
+            labelStyle: .toolbarIcon
+        )
         .accessibilityIdentifier("header.modelSettingsButton")
+    }
+
+    private var currentModel: ModelInfo? {
+        let selected = selectedModelBinding.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let match = availableModels.first(where: { $0.id == selected }) {
+            return match
+        }
+        return availableModels.first(where: \.isDefault) ?? availableModels.first
     }
 
     private var selectedModelBinding: Binding<String> {
@@ -310,6 +313,137 @@ struct ConversationToolbarControls: View {
             },
             set: { appState.reasoningEffort = $0 }
         )
+    }
+}
+
+struct ModelSettingsMenuButton: View {
+    enum LabelStyle {
+        case glassCircle
+        case toolbarIcon
+    }
+
+    let models: [ModelInfo]
+    @Binding var selectedModel: String
+    @Binding var reasoningEffort: String
+    var currentModel: ModelInfo?
+    var iconName = "cpu"
+    var iconFont: Font = MacrodexFont.styled(size: 16, weight: .semibold)
+    var iconForeground: Color = .primary
+    var labelStyle: LabelStyle = .glassCircle
+    var onOpen: () -> Void = {}
+    var onSelection: () -> Void = {}
+
+    @AppStorage("fastMode") private var fastMode = false
+
+    private var resolvedCurrentModel: ModelInfo? {
+        let selected = selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let match = models.first(where: { $0.id == selected }) {
+            return match
+        }
+        if let currentModel {
+            return currentModel
+        }
+        return models.first(where: \.isDefault) ?? models.first
+    }
+
+    private var selectedReasoningEffort: String {
+        let selected = reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !selected.isEmpty {
+            return selected
+        }
+        return resolvedCurrentModel?.defaultReasoningEffort.wireValue ?? ""
+    }
+
+    private var fastModeBinding: Binding<Bool> {
+        Binding(
+            get: { fastMode },
+            set: { value in
+                fastMode = value
+                onSelection()
+            }
+        )
+    }
+
+    var body: some View {
+        Menu {
+            if models.isEmpty {
+                Text("No models available")
+            } else {
+                Section("Model") {
+                    ForEach(models) { model in
+                        Button {
+                            selectedModel = model.id
+                            reasoningEffort = model.defaultReasoningEffort.wireValue
+                            onSelection()
+                        } label: {
+                            menuLabel(
+                                title: model.displayName,
+                                subtitle: model.isDefault ? "Default" : nil,
+                                isSelected: model.id == resolvedCurrentModel?.id
+                            )
+                        }
+                    }
+                }
+            }
+
+            if let model = resolvedCurrentModel,
+               !model.supportedReasoningEfforts.isEmpty {
+                Section("Reasoning") {
+                    ForEach(model.supportedReasoningEfforts) { effort in
+                        let value = effort.reasoningEffort.wireValue
+                        Button {
+                            reasoningEffort = value
+                            onSelection()
+                        } label: {
+                            menuLabel(
+                                title: value,
+                                subtitle: nil,
+                                isSelected: value == selectedReasoningEffort
+                            )
+                        }
+                    }
+                }
+            }
+
+            Section {
+                Toggle(isOn: fastModeBinding) {
+                    Label("Fast responses", systemImage: "bolt.fill")
+                }
+            }
+        } label: {
+            menuButtonLabel
+        }
+        .simultaneousGesture(TapGesture().onEnded { _ in onOpen() })
+        .accessibilityLabel("Model settings")
+    }
+
+    @ViewBuilder
+    private var menuButtonLabel: some View {
+        switch labelStyle {
+        case .glassCircle:
+            Image(systemName: iconName)
+                .font(iconFont)
+                .foregroundStyle(iconForeground)
+                .frame(width: 38, height: 38)
+                .modifier(GlassCircleModifier(interactive: true))
+                .contentShape(Circle())
+        case .toolbarIcon:
+            Image(systemName: iconName)
+                .font(iconFont)
+                .foregroundStyle(iconForeground)
+                .contentShape(Rectangle())
+        }
+    }
+
+    @ViewBuilder
+    private func menuLabel(title: String, subtitle: String?, isSelected: Bool) -> some View {
+        if isSelected {
+            Label(title, systemImage: "checkmark")
+        } else if let subtitle {
+            Text("\(title) (\(subtitle))")
+        } else {
+            Text(title)
+        }
     }
 }
 

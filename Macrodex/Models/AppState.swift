@@ -4,6 +4,12 @@ import SwiftUI
 @MainActor
 @Observable
 final class AppState {
+    struct HomeComposerPrefillRequest: Identifiable, Equatable {
+        let id = UUID()
+        var text: String
+        var startsFoodSearch: Bool
+    }
+
     private struct ThreadPermissionOverride {
         var approvalPolicy: String
         var sandboxMode: String
@@ -57,6 +63,7 @@ final class AppState {
     var pendingThreadNavigation: ThreadKey?
     var pendingComposerAutofocusThread: ThreadKey?
     var homeComposerFocusRequestID = 0
+    var homeComposerPrefillRequest: HomeComposerPrefillRequest?
     private var threadPermissionOverrides: [String: ThreadPermissionOverride] = [:]
     var approvalPolicy: String {
         didSet {
@@ -71,7 +78,7 @@ final class AppState {
 
     init() {
         let storedSelectedModel = UserDefaults.standard.string(forKey: Self.selectedModelKey) ?? ""
-        selectedModel = storedSelectedModel.localizedCaseInsensitiveContains("spark") ? "" : storedSelectedModel
+        selectedModel = storedSelectedModel
         defaultChatModel = UserDefaults.standard.string(forKey: Self.defaultChatModelKey) ?? "gpt-5.4-mini"
         defaultImageModel = UserDefaults.standard.string(forKey: Self.defaultImageModelKey) ?? "gpt-5.4"
         reasoningEffort = UserDefaults.standard.string(forKey: Self.reasoningEffortKey) ?? ""
@@ -104,6 +111,19 @@ final class AppState {
 
     func requestHomeComposerFocus() {
         homeComposerFocusRequestID &+= 1
+    }
+
+    func requestHomeComposerPrefill(text: String, startsFoodSearch: Bool) {
+        homeComposerPrefillRequest = HomeComposerPrefillRequest(
+            text: text,
+            startsFoodSearch: startsFoodSearch
+        )
+        requestHomeComposerFocus()
+    }
+
+    func clearHomeComposerPrefill(id: UUID) {
+        guard homeComposerPrefillRequest?.id == id else { return }
+        homeComposerPrefillRequest = nil
     }
 
     func approvalPolicy(for threadKey: ThreadKey?) -> String {

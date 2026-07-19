@@ -11,6 +11,7 @@ struct ChatGPTOAuthTokenBundle: Codable, Equatable {
     let refreshToken: String?
     let accountID: String
     let planType: String?
+    let email: String?
 }
 
 enum ChatGPTOAuthError: LocalizedError {
@@ -319,13 +320,15 @@ enum ChatGPTOAuth {
             throw ChatGPTOAuthError.missingAccountID
         }
         let planType = resolvePlanType(idClaims: idClaims, accessClaims: accessClaims)
+        let email = resolveEmail(idClaims: idClaims, accessClaims: accessClaims)
 
         return ChatGPTOAuthTokenBundle(
             accessToken: accessToken,
             idToken: idToken,
             refreshToken: refreshToken,
             accountID: accountID,
-            planType: planType
+            planType: planType,
+            email: email
         )
     }
 
@@ -360,6 +363,21 @@ enum ChatGPTOAuth {
             .first(where: { !$0.isEmpty })
     }
 
+    private static func resolveEmail(
+        idClaims: [String: Any],
+        accessClaims: [String: Any]
+    ) -> String? {
+        let candidates = [
+            idClaims["email"] as? String,
+            accessClaims["email"] as? String,
+            idClaims["preferred_username"] as? String,
+            accessClaims["preferred_username"] as? String
+        ]
+        return candidates
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first(where: { $0.contains("@") })
+    }
+
     private static func decodeJWTClaims(_ jwt: String) -> [String: Any] {
         let parts = jwt.split(separator: ".")
         guard parts.count > 1 else { return [:] }
@@ -376,7 +394,9 @@ enum ChatGPTOAuth {
             return [:]
         }
         if let authClaims = object["https://api.openai.com/auth"] as? [String: Any] {
-            return authClaims
+            var merged = object
+            authClaims.forEach { merged[$0.key] = $0.value }
+            return merged
         }
         return object
     }

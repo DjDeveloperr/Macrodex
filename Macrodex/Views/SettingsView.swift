@@ -9,6 +9,8 @@ struct DrawerSettingsView: View {
     @State private var googleAPIKey = ""
     @State private var hasGoogleAIKey = GoogleAIApiKeyStore.shared.hasStoredKey
     @State private var isSavingGoogleAIKey = false
+    @State private var isRefreshingRateLimits = false
+    @State private var hasAttemptedRateLimitRefresh = false
     @AppStorage("autoArchiveChatsAfter14Days") private var legacyAutoArchiveChatsAfter14Days = true
     @AppStorage("autoArchiveChatsAfterDays") private var autoArchiveChatsAfterDays = 14
     @AppStorage("fastMode") private var fastMode = false
@@ -201,7 +203,7 @@ struct DrawerSettingsView: View {
             if let server {
                 switch server.account {
                 case .chatgpt(let email, let planType):
-                    drawerRow("Email", value: email.isEmpty ? "Unknown" : email)
+                    drawerRow("Email", value: providerEmail(fallback: email))
                     drawerRow("Plan", value: planType.displayLabel)
                 case .apiKey:
                     drawerRow("Account", value: "API key")
@@ -296,7 +298,7 @@ struct DrawerSettingsView: View {
                 if let credits = rateLimits.credits {
                     drawerRow("Credits", value: creditsSummary(credits))
                 }
-            } else if server?.account != nil {
+            } else if server?.account != nil, !hasAttemptedRateLimitRefresh || isRefreshingRateLimits {
                 HStack(spacing: 10) {
                     ProgressView()
                         .controlSize(.small)
@@ -304,6 +306,17 @@ struct DrawerSettingsView: View {
                     Text("Loading rate limits...")
                         .macrodexFont(.caption)
                         .foregroundColor(MacrodexTheme.textSecondary)
+                }
+            } else if server?.account != nil {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Current limits are not available from this provider session.")
+                        .macrodexFont(.caption)
+                        .foregroundColor(MacrodexTheme.textSecondary)
+                    Button("Try Again") {
+                        Task { await refreshRateLimits() }
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .disabled(isRefreshingRateLimits)
                 }
             } else {
                 Text("Sign in with ChatGPT to see current limits.")
@@ -485,6 +498,27 @@ struct DrawerSettingsView: View {
         guard let server else { return }
         await appModel.loadConversationMetadataIfNeeded(serverId: server.serverId)
         await appModel.refreshSnapshot()
+        hasAttemptedRateLimitRefresh = true
+    }
+
+    private func refreshRateLimits() async {
+        guard let server else { return }
+        isRefreshingRateLimits = true
+        hasAttemptedRateLimitRefresh = false
+        await appModel.loadRateLimitsIfNeeded(serverId: server.serverId)
+        await appModel.refreshSnapshot()
+        hasAttemptedRateLimitRefresh = true
+        isRefreshingRateLimits = false
+    }
+
+    private func providerEmail(fallback: String) -> String {
+        if let stored = try? ChatGPTOAuthTokenStore.shared.load(),
+           let email = stored.email?.trimmingCharacters(in: .whitespacesAndNewlines),
+           email.contains("@") {
+            return email
+        }
+        let trimmed = fallback.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.contains("@") ? trimmed : "ChatGPT account"
     }
 
     private func refreshHealthKitStatus() {

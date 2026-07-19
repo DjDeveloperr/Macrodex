@@ -565,7 +565,7 @@ struct MessageBubbleView: View {
     private var genericSystemBubble: some View {
         let (title, body) = extractSystemTitleAndBody(message.text)
         let markdown = title == nil ? message.text : body
-        let displayTitle = title ?? "System"
+        let displayTitle = normalizedSystemDisplayTitle(title)
 
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
@@ -608,6 +608,14 @@ struct MessageBubbleView: View {
         let title = first.dropFirst(4).trimmingCharacters(in: .whitespacesAndNewlines)
         let body = lines.dropFirst().joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         return (title.isEmpty ? nil : title, body)
+    }
+
+    private func normalizedSystemDisplayTitle(_ title: String?) -> String {
+        let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmed.localizedCaseInsensitiveContains("runtime error") {
+            return "Error"
+        }
+        return trimmed.isEmpty ? "System" : trimmed
     }
 
     private func normalizedReasoningText(_ body: String) -> String {

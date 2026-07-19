@@ -390,6 +390,8 @@
 		CA6AC63EEAE4204FE473E255 /* temple-dark.json in Resources */ = {isa = PBXBuildFile; fileRef = 868114831FDAA26991802247 /* temple-dark.json */; };
 		CA847D21DC4A8175ECE9E3B5 /* Espresso Cup.svg in Resources */ = {isa = PBXBuildFile; fileRef = 7621E81A23C4F12FEB960B14 /* Espresso Cup.svg */; };
 		CB51480D2126EB08D721E905 /* DashboardScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99CC08A3035D23CC4A9C4448 /* DashboardScreen.swift */; };
+		A1B2C3D4E5F60718293A4B5D /* InsightsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5C /* InsightsScreen.swift */; };
+		B1C2D3E4F5061728394A5B6D /* FoodNutritionEstimator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C2D3E4F5061728394A5B6C /* FoodNutritionEstimator.swift */; };
 		CBC44EC16C3F553A85365C6B /* Miso Soup.png in Resources */ = {isa = PBXBuildFile; fileRef = 292A64BF7EC036D26D1B523C /* Miso Soup.png */; };
 		CC02213409D4CE34FDDB5283 /* ConversationInfoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5450C0408955DA475165C3BC /* ConversationInfoView.swift */; };
 		CC885BDAAACA452C9C496110 /* HomeVoiceOrbButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61C6C6D896CA7F6273B1DAE8 /* HomeVoiceOrbButton.swift */; };
@@ -816,6 +818,8 @@
 		9938F7012213027DF0611634 /* Honey.svg */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Honey.svg; sourceTree = "<group>"; };
 		998047436CCE81EC8DB620F7 /* Salami.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = Salami.png; sourceTree = "<group>"; };
 		99CC08A3035D23CC4A9C4448 /* DashboardScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardScreen.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60718293A4B5C /* InsightsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InsightsScreen.swift; sourceTree = "<group>"; };
+		B1C2D3E4F5061728394A5B6C /* FoodNutritionEstimator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoodNutritionEstimator.swift; sourceTree = "<group>"; };
 		9A9346782CE0D512DC5EB0B0 /* Thanksgiving.svg */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Thanksgiving.svg; sourceTree = "<group>"; };
 		9AC59F564488062F3FBF3B37 /* ServerPill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerPill.swift; sourceTree = "<group>"; };
 		9AEC0F78844905AB14892B00 /* Paprika.svg */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Paprika.svg; sourceTree = "<group>"; };
@@ -1101,6 +1105,7 @@
 				6B517BF25F2ABD9889FF0EE3 /* ConversationWarmupView.swift */,
 				419B969154DB7771BECE025E /* CrossServerToolResultView.swift */,
 				99CC08A3035D23CC4A9C4448 /* DashboardScreen.swift */,
+				A1B2C3D4E5F60718293A4B5C /* InsightsScreen.swift */,
 				1F6367C9894BDF0D5A58ECDA /* DatabaseBackupsView.swift */,
 				1582AE81D9E2947E379DCB4C /* DiffRendering.swift */,
 				1A6F87EBDD97FB0909F021B7 /* DirectoryPickerView.swift */,
@@ -1278,6 +1283,7 @@
 				97F7D344F78992CD786B14B0 /* CrossServerTools.swift */,
 				8FCFC1C820EC28CB03CEF574 /* DatabaseBackupManager.swift */,
 				E30BA7A86E140903860DAC5A /* FoodIconMatcher.swift */,
+				B1C2D3E4F5061728394A5B6C /* FoodNutritionEstimator.swift */,
 				B57A42EB13856884058C0030 /* GoogleAIApiKeyStore.swift */,
 				A2D383677FBBB3A6E98EB8F4 /* LLog.swift */,
 				E7CF5FEF2B0850330C9840A7 /* MacrodexPalette.swift */,
@@ -2207,6 +2213,7 @@
 				609AEF7D38D0FB7998260480 /* CrossServerToolResultView.swift in Sources */,
 				D0BCF2DC88B11FF370171A7F /* CrossServerTools.swift in Sources */,
 				CB51480D2126EB08D721E905 /* DashboardScreen.swift in Sources */,
+				A1B2C3D4E5F60718293A4B5D /* InsightsScreen.swift in Sources */,
 				DDEF7AD9E065C577526A6E7F /* DatabaseBackupManager.swift in Sources */,
 				86DB9DA0960F15301ED9CF56 /* DatabaseBackupsView.swift in Sources */,
 				7A74B583536D5DF4F4A0CE85 /* DiffRendering.swift in Sources */,
@@ -2214,6 +2221,7 @@
 				362C34026DFC1E344D861169 /* DynamicTools.swift in Sources */,
 				D5CE4EBEB1A1B13F1417510D /* Extensions.swift in Sources */,
 				C52CAA0A7CD9718E9E918D5C /* FoodIconMatcher.swift in Sources */,
+				B1C2D3E4F5061728394A5B6D /* FoodNutritionEstimator.swift in Sources */,
 				3DE8F7E9500BB1683F2D8D39 /* FormattedText.swift in Sources */,
 				8034DDA92B4E8C3671FFCEA3 /* GoogleAIApiKeyStore.swift in Sources */,
 				B0F48E864BD3D34888F9D394 /* HeaderView.swift in Sources */,

@@ -2080,12 +2080,27 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
         var content: [String]
     }
 
+    private struct PersistedErrorState: Codable {
+        var itemsByThreadID: [String: [PersistedErrorItem]] = [:]
+    }
+
+    private struct PersistedErrorItem: Codable {
+        var id: String
+        var sourceTurnId: String?
+        var sourceTurnIndex: UInt32?
+        var timestamp: Double?
+        var title: String
+        var message: String
+        var details: String?
+    }
+
     private static let legacyRuntimeDirectoryName = String(bytes: [80, 105, 74, 83, 67], encoding: .utf8) ?? "LegacyAgent"
 
     private let queue = DispatchQueue(label: "com.macrodex.agent-runtime", qos: .userInitiated)
     private let lock = NSRecursiveLock()
     private let stateFileURL: URL
     private let reasoningStateFileURL: URL
+    private let errorStateFileURL: URL
     private let databaseURL: URL
     let defaultWorkingDirectoryPath: String
 
@@ -2136,6 +2151,7 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
         self.databaseURL = workingDirectory.appendingPathComponent("db.sqlite")
         self.stateFileURL = agentDirectory.appendingPathComponent("runtime-state.json")
         self.reasoningStateFileURL = agentDirectory.appendingPathComponent("reasoning-items.json")
+        self.errorStateFileURL = agentDirectory.appendingPathComponent("error-items.json")
 
         try? fileManager.createDirectory(at: workingDirectory, withIntermediateDirectories: true)
         try? fileManager.createDirectory(at: agentDirectory, withIntermediateDirectories: true)
@@ -2143,7 +2159,7 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
     }
 
     private static func migrateLegacyStateIfNeeded(from legacyDirectory: URL, to agentDirectory: URL, fileManager: FileManager) {
-        for filename in ["runtime-state.json", "reasoning-items.json"] {
+        for filename in ["runtime-state.json", "reasoning-items.json", "error-items.json"] {
             let source = legacyDirectory.appendingPathComponent(filename)
             let destination = agentDirectory.appendingPathComponent(filename)
             guard fileManager.fileExists(atPath: source.path),
@@ -2334,7 +2350,7 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
                 self.authToken = accessToken
                 self.authMode = .chatgptAuthTokens
                 self.account = .chatgpt(
-                    email: chatgptAccountId,
+                    email: Self.accountDisplayEmail(accountID: chatgptAccountId),
                     planType: Self.planType(from: chatgptPlanType)
                 )
                 self.emit(.serverChanged(serverId: self.serverId))
@@ -2591,7 +2607,10 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
         if account == nil {
             authToken = auth.accessToken
             authMode = .chatgptAuthTokens
-            account = .chatgpt(email: auth.accountID, planType: .unknown)
+            account = .chatgpt(
+                email: Self.accountDisplayEmail(accountID: auth.accountID),
+                planType: .unknown
+            )
         }
     }
 
@@ -3115,19 +3134,27 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
             }
             let model = params.model ?? record.model
             let provider = providerConfiguration(for: model)
+            let usesFoundationModels = provider.id == MacrodexAgentBuiltInProviderRegistry.foundationModels.id
+            let promptText = Self.promptText(from: params.input)
             var metadata: [String: MacrodexAgentJSONValue] = [:]
             if let effort = params.effort.map(Self.reasoningEffortName)
                 ?? record.reasoningEffort
                 ?? Self.defaultReasoningEffortName(for: model) {
                 metadata["reasoning_effort"] = .string(effort)
             }
+            let tools = usesFoundationModels
+                ? foundationModelToolDefinitions(for: promptText, dynamicTools: record.dynamicTools)
+                : mergedToolDefinitions(dynamicTools: record.dynamicTools)
+            let instructions = usesFoundationModels
+                ? AgentRuntimeInstructions.foundationModelInstructions(for: key)
+                : record.developerInstructions
             let request = MacrodexAgentTurnRequest(
                 threadID: key.threadId,
                 input: Self.agentMessages(from: params.input),
                 provider: provider,
-                tools: mergedToolDefinitions(dynamicTools: record.dynamicTools),
-                instructions: record.developerInstructions,
-                maxToolRounds: 8,
+                tools: tools,
+                instructions: instructions,
+                maxToolRounds: usesFoundationModels ? 5 : 8,
                 metadata: metadata
             )
             let result = try runtime.runTurn(request) { [weak self] event in
@@ -3708,7 +3735,7 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
             id: "\(turnID)-error",
             content: .error(
                 HydratedErrorData(
-                    title: "MacrodexAgent runtime error",
+                    title: "Error",
                     message: error.localizedDescription,
                     details: nil
                 )
@@ -3732,6 +3759,7 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
         record.lastTurnEndMs = Self.nowMilliseconds()
         record.stats = Self.stats(for: record)
         threads[key.threadId] = record
+        savePersistedErrorItems(for: record)
         lock.unlock()
 
         emit(.threadItemChanged(key: key, item: item, sessionSummary: sessionSummary(record)))
@@ -3819,9 +3847,13 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
         let model = threads[thread.id]?.model ?? preferredDefaultModelID()
         let items: [HydratedConversationItem]
         if includeMessages {
-            items = Self.mergedConversationItems(
+            let itemsWithReasoning = Self.mergedConversationItems(
                 Self.hydratedItems(from: messages, threadID: thread.id),
                 withPersistedReasoning: loadPersistedReasoningItems(threadID: thread.id)
+            )
+            items = Self.mergedConversationItems(
+                itemsWithReasoning,
+                withPersistedErrors: loadPersistedErrorItems(threadID: thread.id)
             )
         } else {
             items = threads[thread.id]?.items ?? []
@@ -4071,6 +4103,111 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
         return definitionsByName.values.sorted { $0.name < $1.name }
     }
 
+    private func foundationModelToolDefinitions(
+        for prompt: String,
+        dynamicTools: [AppDynamicToolSpec]
+    ) -> [MacrodexAgentToolDefinition] {
+        let allDefinitions = mergedToolDefinitions(dynamicTools: dynamicTools)
+        let definitionsByName = Dictionary(uniqueKeysWithValues: allDefinitions.map { ($0.name, $0) })
+        let normalizedPrompt = prompt
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        var names = Set<String>()
+
+        if !Self.isCasualGreeting(normalizedPrompt) {
+            names.insert(MacrodexAgentBuiltInToolDefinitions.title.name)
+        }
+
+        if Self.containsAny(
+            normalizedPrompt,
+            words: [
+                "food", "eat", "ate", "eaten", "meal", "breakfast", "lunch", "dinner",
+                "snack", "drink", "calorie", "macro", "protein", "carb", "fat", "log"
+            ]
+        ) {
+            names.insert(MacrodexAgentMacrodexToolDefinitions.foodSearch.name)
+            names.insert(MacrodexAgentMacrodexToolDefinitions.logFood.name)
+        }
+
+        if Self.containsAny(
+            normalizedPrompt,
+            words: [
+                "what did i eat", "what have i eaten", "how many calories", "calories left",
+                "logged", "today", "yesterday", "progress", "history", "summary", "total"
+            ]
+        ) {
+            names.insert(MacrodexAgentMacrodexToolDefinitions.databaseTransaction.name)
+        }
+
+        if Self.containsAny(
+            normalizedPrompt,
+            words: ["health", "healthkit", "apple health", "steps", "heart", "sleep", "workout", "sync nutrition"]
+        ) {
+            names.insert(MacrodexAgentMacrodexToolDefinitions.healthKit.name)
+        }
+
+        if Self.containsAny(
+            normalizedPrompt,
+            words: ["recipe", "save recipe", "meal template", "repair recipe", "ingredient"]
+        ) {
+            names.insert(MacrodexAgentMacrodexToolDefinitions.foodSearch.name)
+            names.insert(MacrodexAgentMacrodexToolDefinitions.saveRecipeFromMeal.name)
+            names.insert(MacrodexAgentMacrodexToolDefinitions.finalizeRecipeSave.name)
+            names.insert(MacrodexAgentMacrodexToolDefinitions.databaseTransaction.name)
+        }
+
+        if Self.containsAny(
+            normalizedPrompt,
+            words: ["sql", "database", "table", "schema", "query", "jsc", "javascript", "repair"]
+        ) {
+            names.insert(MacrodexAgentBuiltInToolDefinitions.sql.name)
+            names.insert(MacrodexAgentBuiltInToolDefinitions.jsc.name)
+            names.insert(MacrodexAgentMacrodexToolDefinitions.databaseSchema.name)
+            names.insert(MacrodexAgentMacrodexToolDefinitions.databaseTransaction.name)
+        }
+
+        if Self.containsAny(
+            normalizedPrompt,
+            words: ["web", "search online", "look up", "latest", "current", "restaurant", "brand", "nutrition source"]
+        ) {
+            names.insert(MacrodexAgentBuiltInToolDefinitions.webSearch.name)
+        }
+
+        for spec in dynamicTools where Self.shouldIncludeDynamicTool(spec, prompt: normalizedPrompt) {
+            names.insert(spec.name)
+        }
+
+        return names
+            .compactMap { definitionsByName[$0] }
+            .sorted { $0.name < $1.name }
+    }
+
+    private static func isCasualGreeting(_ prompt: String) -> Bool {
+        let normalized = prompt
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        return ["", "yo", "hi", "hey", "hello", "sup"].contains(normalized)
+    }
+
+    private static func containsAny(_ prompt: String, words: [String]) -> Bool {
+        words.contains { prompt.contains($0) }
+    }
+
+    private static func shouldIncludeDynamicTool(_ spec: AppDynamicToolSpec, prompt: String) -> Bool {
+        let name = spec.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !name.isEmpty else { return false }
+        if prompt.contains(name) {
+            return true
+        }
+        return spec.description
+            .lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { $0.count >= 5 }
+            .prefix(8)
+            .contains { prompt.contains($0) }
+    }
+
     private static func agentMessages(from inputs: [AppUserInput]) -> [MacrodexAgentMessage] {
         let text = promptText(from: inputs)
         let imageURLs = imageDataUris(from: inputs)
@@ -4178,6 +4315,56 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
         }
     }
 
+    private func loadPersistedErrorItems(threadID: String) -> [HydratedConversationItem] {
+        guard let data = try? Data(contentsOf: errorStateFileURL),
+              let state = try? JSONDecoder().decode(PersistedErrorState.self, from: data) else {
+            return []
+        }
+        return (state.itemsByThreadID[threadID] ?? []).map { item in
+            HydratedConversationItem(
+                id: item.id,
+                content: .error(
+                    HydratedErrorData(
+                        title: item.title,
+                        message: item.message,
+                        details: item.details
+                    )
+                ),
+                sourceTurnId: item.sourceTurnId,
+                sourceTurnIndex: item.sourceTurnIndex,
+                timestamp: item.timestamp,
+                isFromUserTurnBoundary: false
+            )
+        }
+    }
+
+    private func savePersistedErrorItems(for record: ThreadRecord) {
+        let errorItems = record.items.compactMap { item -> PersistedErrorItem? in
+            guard case .error(let data) = item.content else { return nil }
+            let message = data.message.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !message.isEmpty else { return nil }
+            return PersistedErrorItem(
+                id: item.id,
+                sourceTurnId: item.sourceTurnId,
+                sourceTurnIndex: item.sourceTurnIndex,
+                timestamp: item.timestamp,
+                title: data.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Error" : data.title,
+                message: message,
+                details: data.details
+            )
+        }
+
+        var state = PersistedErrorState()
+        if let data = try? Data(contentsOf: errorStateFileURL),
+           let decoded = try? JSONDecoder().decode(PersistedErrorState.self, from: data) {
+            state = decoded
+        }
+        state.itemsByThreadID[record.key.threadId] = errorItems
+        if let data = try? JSONEncoder().encode(state) {
+            try? data.write(to: errorStateFileURL, options: [.atomic])
+        }
+    }
+
     private static func mergedConversationItems(
         _ items: [HydratedConversationItem],
         withPersistedReasoning reasoningItems: [HydratedConversationItem]
@@ -4211,7 +4398,36 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
         return merged
     }
 
+    private static func mergedConversationItems(
+        _ items: [HydratedConversationItem],
+        withPersistedErrors errorItems: [HydratedConversationItem]
+    ) -> [HydratedConversationItem] {
+        guard !errorItems.isEmpty else { return items }
+        var merged = items
+        var existingIDs = Set(items.map(\.id))
+        for item in errorItems.sorted(by: persistedConversationItemSort) where !existingIDs.contains(item.id) {
+            if let timestamp = item.timestamp,
+               let insertionIndex = merged.firstIndex(where: { existing in
+                   guard let existingTimestamp = existing.timestamp else { return false }
+                   return existingTimestamp > timestamp
+               }) {
+                merged.insert(item, at: insertionIndex)
+            } else {
+                Self.upsertOrderedItem(item, in: &merged)
+            }
+            existingIDs.insert(item.id)
+        }
+        return merged
+    }
+
     private static func persistedReasoningSort(
+        _ lhs: HydratedConversationItem,
+        _ rhs: HydratedConversationItem
+    ) -> Bool {
+        persistedConversationItemSort(lhs, rhs)
+    }
+
+    private static func persistedConversationItemSort(
         _ lhs: HydratedConversationItem,
         _ rhs: HydratedConversationItem
     ) -> Bool {
@@ -4581,6 +4797,16 @@ private final class MacrodexAgentLocalRuntimeCore: @unchecked Sendable {
         case "edu": return .edu
         default: return .unknown
         }
+    }
+
+    private static func accountDisplayEmail(accountID: String) -> String {
+        if let tokens = try? ChatGPTOAuthTokenStore.shared.load(),
+           tokens.accountID == accountID,
+           let email = tokens.email?.trimmingCharacters(in: .whitespacesAndNewlines),
+           email.contains("@") {
+            return email
+        }
+        return "ChatGPT account"
     }
 
     private static func preview(_ text: String) -> String {

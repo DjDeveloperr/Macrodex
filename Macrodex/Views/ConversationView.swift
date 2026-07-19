@@ -32,6 +32,7 @@ enum ConversationStreamingViewportPolicy {
 }
 
 struct ConversationView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(AppState.self) private var appState
     @Environment(AppModel.self) private var appModel
     @Environment(DrawerController.self) private var drawerController
@@ -114,6 +115,13 @@ struct ConversationView: View {
                     }
                 )
             }
+        }
+        .overlay(alignment: .bottom) {
+            MacrodexBottomProgressiveBackdrop(colorScheme: colorScheme)
+                .frame(height: 184 + max(bottomInset, 0))
+                .offset(y: 54)
+                .allowsHitTesting(false)
+                .ignoresSafeArea([.container, .keyboard], edges: .bottom)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             ConversationBottomChrome(
@@ -288,6 +296,7 @@ struct ConversationView: View {
 }
 
 struct DraftConversationView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(AppModel.self) private var appModel
     @Environment(DrawerController.self) private var drawerController
     let draftID: UUID
@@ -334,6 +343,13 @@ struct DraftConversationView: View {
                 .ignoresSafeArea()
         }
         .scrollDisabled(drawerController.progress > 0.001)
+        .overlay(alignment: .bottom) {
+            MacrodexBottomProgressiveBackdrop(colorScheme: colorScheme)
+                .frame(height: 184 + max(bottomInset, 0))
+                .offset(y: 54)
+                .allowsHitTesting(false)
+                .ignoresSafeArea([.container, .keyboard], edges: .bottom)
+        }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             ConversationBottomChrome(
                 pinnedContextItems: [],
@@ -449,11 +465,7 @@ private extension AppThreadSnapshot {
 }
 
 private struct ConversationBottomChrome: View {
-    private enum Metrics {
-        static let keyboardAttachedBottomPadding: CGFloat = 2
-        static let restingBottomPadding: CGFloat = 32
-    }
-
+    @Environment(DrawerController.self) private var drawerController
     let pinnedContextItems: [ConversationItem]
     let composer: ConversationComposerSnapshot
     let onSend: (String, [UIImage], [SkillMentionSelection]) -> Void
@@ -465,18 +477,18 @@ private struct ConversationBottomChrome: View {
     let onOpenConversation: ((ThreadKey) -> Void)?
     let onResumeSessions: ((String) -> Void)?
     @State private var keyboardVisible = false
-    @State private var keyboardTop: CGFloat?
-    @State private var viewportMaxY: CGFloat = UIScreen.main.bounds.maxY
+    @State private var keyboardOverlap: CGFloat = 0
+    @State private var maximumKeyboardOverlap: CGFloat = 0
 
     private var composerBottomPadding: CGFloat {
-        guard keyboardVisible, let keyboardTop else {
-            return Metrics.restingBottomPadding
+        guard !drawerController.isVisiblyOpen else {
+            return ConversationComposerKeyboardMetrics.restingBottomPadding
         }
-
-        let restingComposerBottom = viewportMaxY - max(bottomInset, 0) - Metrics.restingBottomPadding
-        return max(
-            Metrics.keyboardAttachedBottomPadding,
-            keyboardTop - restingComposerBottom
+        return MacrodexKeyboardGeometry.bottomPadding(
+            overlap: keyboardOverlap,
+            maximumOverlap: maximumKeyboardOverlap,
+            resting: ConversationComposerKeyboardMetrics.restingBottomPadding,
+            attached: ConversationComposerKeyboardMetrics.keyboardAttachedBottomPadding
         )
     }
 
@@ -502,33 +514,42 @@ private struct ConversationBottomChrome: View {
         }
         .padding(.bottom, composerBottomPadding)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { notification in
+            guard !drawerController.isVisiblyOpen else {
+                clearKeyboardGeometry()
+                return
+            }
             updateKeyboardFrame(from: notification)
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
+            guard !drawerController.isVisiblyOpen else {
+                clearKeyboardGeometry()
+                return
+            }
             updateKeyboardFrame(from: notification)
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardOverlap = 0
             keyboardVisible = false
-            keyboardTop = nil
         }
     }
 
     private func updateKeyboardFrame(from notification: Notification) {
-        guard let endFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
-              let window = UIApplication.shared.connectedScenes
-                  .compactMap({ $0 as? UIWindowScene })
-                  .flatMap(\.windows)
-                  .first(where: \.isKeyWindow)
-        else {
-            keyboardVisible = true
-            keyboardTop = nil
+        guard !drawerController.isVisiblyOpen else {
+            keyboardVisible = false
             return
         }
+        guard let overlap = MacrodexKeyboardGeometry.overlap(from: notification) else {
+            keyboardVisible = true
+            return
+        }
+        keyboardOverlap = overlap
+        maximumKeyboardOverlap = max(maximumKeyboardOverlap, overlap)
+        keyboardVisible = overlap > 1
+    }
 
-        let keyboardFrame = window.convert(endFrame, from: nil)
-        viewportMaxY = window.bounds.maxY
-        keyboardTop = keyboardFrame.minY
-        keyboardVisible = keyboardFrame.minY < window.bounds.maxY - 1
+    private func clearKeyboardGeometry() {
+        keyboardOverlap = 0
+        keyboardVisible = false
     }
 }
 
@@ -802,6 +823,7 @@ private struct ConversationMessageList: View {
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
                 .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
+                    guard !drawerController.isVisiblyOpen else { return }
                     guard isNearBottom || autoFollowStreaming else { return }
                     autoFollowStreaming = true
                     isNearBottom = true
@@ -1296,6 +1318,7 @@ private struct ScrollToBottomIndicator: View {
 private struct ConversationInputBar: View {
     @Environment(AppState.self) private var appState
     @Environment(AppModel.self) private var appModel
+    @Environment(DrawerController.self) private var drawerController
     let snapshot: ConversationComposerSnapshot
     @AppStorage("workDir") private var workDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.path ?? "/"
     @AppStorage("fastMode") private var fastMode = false
@@ -1456,11 +1479,17 @@ private struct ConversationInputBar: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
+            guard !drawerController.isVisiblyOpen else { return }
             guard !hasLoggedKeyboardShown else { return }
             hasLoggedKeyboardShown = true
             os_signpost(.event, log: conversationViewSignpostLog, name: "KeyboardShown")
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            guard !drawerController.isVisiblyOpen else {
+                keyboardVisible = false
+                isComposerFocused = false
+                return
+            }
             keyboardVisible = true
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
@@ -1471,13 +1500,22 @@ private struct ConversationInputBar: View {
         }
         .onAppear {
             restoreDraftIfNeeded()
+            guard !drawerController.isVisiblyOpen else { return }
             guard autoFocusComposer, !snapshot.isTurnActive else { return }
             onAutoFocusComposerConsumed?()
             autoFocusTask?.cancel()
             autoFocusTask = Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(150))
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled,
+                      !drawerController.isVisiblyOpen
+                else { return }
                 isComposerFocused = true
+            }
+        }
+        .onChange(of: drawerController.isVisiblyOpen) { _, isVisiblyOpen in
+            if isVisiblyOpen {
+                dismissComposerInput()
+                keyboardVisible = false
             }
         }
         .onDisappear {

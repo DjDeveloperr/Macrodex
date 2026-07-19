@@ -753,7 +753,7 @@ final class MacrodexAgentTests: XCTestCase {
 
         let models = runtime.availableModels(providerID: "openai")
 
-        XCTAssertFalse(models.contains { $0.id == "gpt-5.3-codex-spark" })
+        XCTAssertTrue(models.contains { $0.id == "gpt-5.3-codex-spark" })
         XCTAssertEqual(runtime.preferredModelID(providerID: "openai"), "gpt-5.4-mini")
         XCTAssertTrue(models.allSatisfy(\.supportsTools))
         XCTAssertTrue(models.allSatisfy(\.supportsChatGPTAuth))
@@ -1396,6 +1396,12 @@ final class MacrodexAgentTests: XCTestCase {
         XCTAssertEqual(result.finalMessage?.content, "done")
         XCTAssertTrue(registry.definitions.map(\.name).contains("jsc"))
         XCTAssertTrue(registry.definitions.map(\.name).contains("sql"))
+    }
+
+    func testFoundationModelsCatalogAdvertisesToolSupport() throws {
+        let models = MacrodexAgentBuiltInModelCatalogs.foundationModels.models
+        XCTAssertEqual(models.first(where: { $0.id == "system" })?.supportsTools, true)
+        XCTAssertEqual(models.first(where: { $0.id == "pcc" })?.supportsTools, true)
     }
 
     private func temporaryDatabaseURL() -> URL {

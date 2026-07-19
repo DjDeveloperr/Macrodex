@@ -1,11 +1,19 @@
 import SwiftUI
 import UIKit
 
+enum ConversationComposerKeyboardMetrics {
+    static let restingBottomPadding: CGFloat = 32
+    static let keyboardAttachedBottomPadding: CGFloat = 8
+}
+
 struct ConversationComposerEntryRowView: View {
     private enum Metrics {
         static let controlSize: CGFloat = 40
         static let inlineControlSize: CGFloat = 36
         static let inputMinHeight: CGFloat = 40
+        static let focusedHorizontalPadding: CGFloat = 12
+        static let restingHorizontalPadding: CGFloat = 34
+        static let compactInlineControlLift: CGFloat = 2
     }
 
     @Binding var showAttachMenu: Bool
@@ -66,6 +74,19 @@ struct ConversationComposerEntryRowView: View {
         hasText || hasAttachment
     }
 
+    private var horizontalPadding: CGFloat {
+        isComposerFocused ? Metrics.focusedHorizontalPadding : Metrics.restingHorizontalPadding
+    }
+
+    private var usesCompactInputLine: Bool {
+        inputText.rangeOfCharacter(from: .newlines) == nil
+            && inputText.count <= 42
+    }
+
+    private var inlineControlBottomPadding: CGFloat {
+        usesCompactInputLine ? Metrics.compactInlineControlLift : 0
+    }
+
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
             if !voiceManager.isRecording && !voiceManager.isTranscribing && (!isTurnActive || keepsAttachmentButtonVisible) {
@@ -121,6 +142,7 @@ struct ConversationComposerEntryRowView: View {
                             .frame(width: Metrics.inlineControlSize, height: Metrics.inlineControlSize)
                             .contentShape(Rectangle())
                     }
+                    .padding(.bottom, inlineControlBottomPadding)
                     .padding(.trailing, 4)
                     .accessibilityLabel("Clear food search")
                 } else if canSend {
@@ -131,6 +153,7 @@ struct ConversationComposerEntryRowView: View {
                             .frame(width: Metrics.inlineControlSize, height: Metrics.inlineControlSize)
                             .contentShape(Rectangle())
                     }
+                    .padding(.bottom, inlineControlBottomPadding)
                     .padding(.trailing, 4)
                     .accessibilityLabel("Send message")
                     .macrodexSimDeckElement(
@@ -149,6 +172,7 @@ struct ConversationComposerEntryRowView: View {
                             .frame(width: Metrics.inlineControlSize, height: Metrics.inlineControlSize)
                             .contentShape(Rectangle())
                     }
+                    .padding(.bottom, inlineControlBottomPadding)
                     .padding(.trailing, 4)
                     .accessibilityLabel("Stop recording")
                 } else if voiceManager.isTranscribing {
@@ -164,6 +188,7 @@ struct ConversationComposerEntryRowView: View {
                             .frame(width: Metrics.inlineControlSize, height: Metrics.inlineControlSize)
                             .contentShape(Rectangle())
                     }
+                    .padding(.bottom, inlineControlBottomPadding)
                     .padding(.trailing, 4)
                     .accessibilityLabel("Start voice input")
                     .macrodexSimDeckElement(
@@ -205,9 +230,10 @@ struct ConversationComposerEntryRowView: View {
 
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.86), value: isTurnActive)
-        .padding(.horizontal, 12)
+        .padding(.horizontal, horizontalPadding)
         .padding(.top, 6)
         .padding(.bottom, 6)
+        .animation(.spring(response: 0.28, dampingFraction: 0.88), value: isComposerFocused)
         .macrodexSimDeckElement(
             "Composer controls",
             id: "macrodex.composer.controls",

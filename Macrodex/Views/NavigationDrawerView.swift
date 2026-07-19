@@ -3,6 +3,7 @@ import UIKit
 
 enum DrawerPrimaryItem: String, Hashable {
     case dashboard
+    case insights
     case library
     case settings
 }
@@ -18,10 +19,7 @@ private enum DrawerTone {
     static let textPrimary = Color(uiColor: .label)
     static let textSecondary = Color(uiColor: .secondaryLabel)
     static let textTertiary = Color(uiColor: .tertiaryLabel)
-    static let rowFill = adaptive(light: "#F2F2F7", dark: "#121214")
-    static let selectedFill = accent.opacity(0.14)
-    static let iconFill = accent.opacity(0.14)
-    static let iconNeutralFill = adaptive(light: "#E8E8ED", dark: "#1C1C1E")
+    static let selectedFill = adaptive(light: "#EDEDEF", dark: "#202123")
 
     private static func adaptive(light: String, dark: String) -> Color {
         Color(uiColor: UIColor { traits in
@@ -30,7 +28,81 @@ private enum DrawerTone {
     }
 }
 
+private enum DrawerLayout {
+    static let chromeHorizontalPadding: CGFloat = 16
+    static let contentLeadingAnchor: CGFloat = 24
+    static let rowInnerHorizontalPadding: CGFloat = contentLeadingAnchor - chromeHorizontalPadding
+    static let chatListHorizontalPadding: CGFloat = 12
+    static let chatRowInnerHorizontalPadding: CGFloat = contentLeadingAnchor - chatListHorizontalPadding
+    static let selectedRowHorizontalBleed: CGFloat = 8
+}
+
+private struct DrawerTopChromeHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+#if DEBUG
+private enum NavigationDrawerDebugSamples {
+    static let serverId = "debug-drawer"
+    static let serverName = "Macrodex Preview"
+    static let cwd = "/Users/dj/Developer/Macrodex"
+
+    static var sessions: [AppSessionSummary] {
+        [
+            makeSession(title: "Breakfast protein plan", threadId: "breakfast-protein", minutesAgo: 8),
+            makeSession(title: "Honeydew melon nutrition", threadId: "honeydew-melon", minutesAgo: 24),
+            makeSession(title: "Chicken rice macros", threadId: "chicken-rice", minutesAgo: 48),
+            makeSession(title: "Greek yogurt snack ideas", threadId: "greek-yogurt", minutesAgo: 93),
+            makeSession(title: "Weekly meal prep totals", threadId: "meal-prep-totals", minutesAgo: 180),
+            makeSession(title: "Post workout dinner", threadId: "post-workout-dinner", minutesAgo: 360),
+            makeSession(title: "Morning coffee calories", threadId: "morning-coffee", minutesAgo: 480),
+            makeSession(title: "Late snack cleanup", threadId: "late-snack", minutesAgo: 620),
+            makeSession(title: "Protein target adjustment", threadId: "protein-target", minutesAgo: 760),
+            makeSession(title: "Sushi dinner estimate", threadId: "sushi-dinner", minutesAgo: 920),
+            makeSession(title: "Apple Health reconcile", threadId: "health-reconcile", minutesAgo: 1_120),
+            makeSession(title: "Library duplicate foods", threadId: "library-duplicates", minutesAgo: 1_360)
+        ]
+    }
+
+    private static func makeSession(title: String, threadId: String, minutesAgo: TimeInterval) -> AppSessionSummary {
+        AppSessionSummary(
+            key: ThreadKey(serverId: serverId, threadId: threadId),
+            serverDisplayName: serverName,
+            serverHost: "127.0.0.1",
+            title: title,
+            preview: title,
+            cwd: cwd,
+            model: "gpt-5.4",
+            modelProvider: "OpenAI",
+            parentThreadId: nil,
+            agentNickname: nil,
+            agentRole: nil,
+            agentDisplayLabel: nil,
+            agentStatus: .unknown,
+            updatedAt: Int64(Date().addingTimeInterval(-minutesAgo * 60).timeIntervalSince1970),
+            hasActiveTurn: false,
+            isSubagent: false,
+            isFork: false,
+            lastResponsePreview: nil,
+            lastResponseTurnId: nil,
+            lastUserMessage: nil,
+            lastToolLabel: nil,
+            recentToolLog: [],
+            lastTurnStartMs: nil,
+            lastTurnEndMs: nil,
+            stats: nil,
+            tokenUsage: nil
+        )
+    }
+}
+#endif
+
 struct NavigationDrawerView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(AppModel.self) private var appModel
     @Environment(AppState.self) private var appState
     @Environment(ConversationWarmupCoordinator.self) private var conversationWarmup
@@ -54,30 +126,62 @@ struct NavigationDrawerView: View {
     @State private var pinnedKeys: [SavedThreadsStore.PinnedKey] = SavedThreadsStore.pinnedKeys()
     @State private var isStartingNewSession = false
     @State private var actionErrorMessage: String?
+    @State private var drawerTopChromeHeight: CGFloat = 0
+    @State private var isSearchActive = false
+    @State private var searchText = ""
+    @State private var debouncedSearchText = ""
+    @State private var searchDebounceTask: Task<Void, Never>?
+    @State private var searchDismissPending = false
+    @State private var drawerKeyboardOverlap: CGFloat = 0
+    @State private var drawerScrollDistance: CGFloat = 0
+    @FocusState private var isSearchFieldFocused: Bool
 
+    var topSafeAreaInset: CGFloat = 0
     var bottomSafeAreaInset: CGFloat = 0
     let selection: DrawerContentSelection
     let onShowDashboard: () -> Void
+    let onShowInsights: () -> Void
     let onShowLibrary: () -> Void
     let onShowSettings: () -> Void
     let onOpenNewChatDraft: () -> Void
     let onOpenConversation: (ThreadKey) -> Void
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    drawerHeader
-                    sessionsSection
+        ScrollView {
+            Group {
+                if isSearchActive {
+                    drawerSearchResultsContent
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                } else {
+                    drawerScrollableContent
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                 }
-                .padding(.bottom, 112 + bottomSafeAreaInset)
             }
-            .scrollIndicators(.hidden)
-
-            drawerFooter
+            .padding(.top, max(drawerTopChromeHeight + 4, topSafeAreaInset + 76))
+            .padding(.bottom, drawerScrollBottomPadding)
+        }
+        .id(isSearchActive ? "drawer-search" : "drawer-normal")
+        .scrollIndicators(.hidden)
+        .scrollDismissesKeyboard(.interactively)
+        .onScrollGeometryChange(for: CGFloat.self) { geometry in
+            max(geometry.contentOffset.y + geometry.contentInsets.top, 0)
+        } action: { _, distance in
+            updateDrawerScrollDistance(distance)
+        }
+        .mask(alignment: .top) {
+            drawerScrollContentMask
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            drawerBottomChrome
+        }
+        .overlay(alignment: .top) {
+            drawerTopChrome
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(DrawerTone.background)
+        .onPreferenceChange(DrawerTopChromeHeightPreferenceKey.self) { height in
+            drawerTopChromeHeight = height
+        }
         .task {
             sessionsModel.bind(appModel: appModel, appState: appState)
             await loadSessionsIfNeeded()
@@ -88,6 +192,23 @@ struct NavigationDrawerView: View {
         }
         .onChange(of: recentSessions.map(\.key)) { _, _ in
             visibleRecentSessionCount = 10
+        }
+        .onChange(of: searchText) { _, query in
+            scheduleSearchDebounce(for: query)
+        }
+        .onChange(of: drawerController.isOpen) { _, isOpen in
+            if !isOpen {
+                resetSearch(immediate: true)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { notification in
+            updateDrawerKeyboardOverlap(from: notification)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
+            updateDrawerKeyboardOverlap(from: notification)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { notification in
+            handleDrawerKeyboardWillHide(notification)
         }
         .alert("Drawer Action Failed", isPresented: Binding(
             get: { actionErrorMessage != nil },
@@ -117,30 +238,132 @@ struct NavigationDrawerView: View {
         }
     }
 
-    private var drawerHeader: some View {
-        VStack(alignment: .leading, spacing: 10) {
+    private var drawerScrollBottomPadding: CGFloat {
+        isSearchActive ? 14 : 18
+    }
+
+    private var drawerScrollContentMask: some View {
+        let progress = drawerHeaderBackdropProgress
+        return GeometryReader { proxy in
+            let headerHeight = min(max(topSafeAreaInset + 72, 86), proxy.size.height)
+            VStack(spacing: 0) {
+                LinearGradient(
+                    stops: [
+                        .init(color: .black.opacity(1 - progress), location: 0),
+                        .init(color: .black.opacity(1 - progress * 0.92), location: 0.58),
+                        .init(color: .black, location: 1)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: headerHeight)
+
+                Color.black
+                    .frame(height: max(proxy.size.height - headerHeight, 0))
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
+        }
+    }
+
+    private var drawerScrollableContent: some View {
+        VStack(alignment: .leading, spacing: 26) {
+            drawerHeaderButtons
+                .padding(.horizontal, DrawerLayout.chromeHorizontalPadding)
+            sessionsSection
+        }
+    }
+
+    private var drawerTopChrome: some View {
+        ZStack(alignment: .topLeading) {
+            DrawerTopSoftBlurBackdrop(
+                progress: drawerHeaderBackdropProgress,
+                colorScheme: colorScheme
+            )
+            .frame(height: max(topSafeAreaInset + 72, 86))
+            .ignoresSafeArea(.container, edges: .top)
+            .allowsHitTesting(false)
+
+            VStack(alignment: .leading, spacing: 0) {
+                drawerBrandHeader
+            }
+            .padding(.horizontal, DrawerLayout.chromeHorizontalPadding)
+            .padding(.top, topSafeAreaInset + 10)
+            .padding(.bottom, 12)
+            .background {
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: DrawerTopChromeHeightPreferenceKey.self,
+                        value: proxy.size.height
+                    )
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var drawerBrandHeader: some View {
+        HStack(spacing: 14) {
+            Text("Macrodex")
+                .font(.system(size: 24, weight: .regular))
+                .foregroundStyle(DrawerTone.textPrimary)
+                .lineLimit(1)
+            Spacer(minLength: 12)
+            drawerSearchButton
+        }
+        .padding(.horizontal, DrawerLayout.rowInnerHorizontalPadding)
+        .padding(.bottom, 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var drawerSearchButton: some View {
+        Button {
+            if isSearchActive {
+                resetSearch(immediate: false)
+            } else {
+                activateSearch()
+            }
+        } label: {
+            Image(systemName: isSearchActive ? "xmark" : "magnifyingglass")
+                .font(.system(size: 18, weight: .regular))
+                .foregroundStyle(DrawerTone.textPrimary)
+                .frame(width: 48, height: 48)
+                .modifier(GlassCircleModifier(interactive: true))
+        }
+        .buttonStyle(.plain)
+        .contentShape(Circle())
+        .accessibilityIdentifier("drawer.search")
+        .accessibilityLabel(isSearchActive ? "Close search" : "Search chats")
+    }
+
+    private var drawerHeaderButtons: some View {
+        drawerHeaderButtonStack
+    }
+
+    private var drawerHeaderButtonStack: some View {
+        VStack(alignment: .leading, spacing: 6) {
             drawerNavButton(
                 title: "Dashboard",
-                subtitle: "Calories, meals, progress",
-                systemImage: "house.fill",
+                systemImage: "house",
                 isSelected: selection == .primary(.dashboard),
                 action: onShowDashboard
             )
             drawerNavButton(
+                title: "Insights",
+                systemImage: "chart.xyaxis.line",
+                isSelected: selection == .primary(.insights),
+                action: onShowInsights
+            )
+            drawerNavButton(
                 title: "Library",
-                subtitle: "Foods, recipes, templates",
-                systemImage: "books.vertical.fill",
+                systemImage: "books.vertical",
                 isSelected: selection == .primary(.library),
                 action: onShowLibrary
             )
         }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 20)
     }
 
     private func drawerNavButton(
         title: String,
-        subtitle: String,
         systemImage: String,
         isSelected: Bool,
         action: @escaping () -> Void
@@ -151,43 +374,41 @@ struct NavigationDrawerView: View {
             drawerController.close()
         }
 
-        return HStack(spacing: 12) {
-            Image(systemName: systemImage)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(isSelected ? DrawerTone.accent : DrawerTone.textPrimary)
-                .frame(width: 34, height: 34)
-                .background(isSelected ? DrawerTone.iconFill : DrawerTone.iconNeutralFill, in: Circle())
-            VStack(alignment: .leading, spacing: 2) {
+        return Button(action: performAction) {
+            HStack(spacing: 14) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 17, weight: .regular))
+                    .symbolRenderingMode(.monochrome)
+                    .foregroundStyle(DrawerTone.textPrimary)
+                    .frame(width: 30, height: 34, alignment: .leading)
                 Text(title)
-                    .font(.headline.weight(.semibold))
-                    .foregroundStyle(isSelected ? DrawerTone.accent : DrawerTone.textPrimary)
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(DrawerTone.textSecondary)
+                    .font(.system(size: 17, weight: .regular))
+                    .foregroundStyle(DrawerTone.textPrimary)
+                Spacer()
             }
-            Spacer()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, DrawerLayout.rowInnerHorizontalPadding)
+            .frame(height: 44)
+            .background {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(isSelected ? DrawerTone.selectedFill : Color.clear)
+                    .padding(.horizontal, -DrawerLayout.selectedRowHorizontalBleed)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(isSelected ? DrawerTone.selectedFill : DrawerTone.rowFill)
-        )
-        .contentShape(Rectangle())
-        .onTapGesture(perform: performAction)
+        .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(title), \(subtitle)")
+        .accessibilityLabel(title)
         .accessibilityValue(isSelected ? "Selected" : "")
         .accessibilityHint("Opens \(title)")
-        .accessibilityAddTraits(.isButton)
     }
 
     private var sessionsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Chats")
-                    .font(.headline.weight(.semibold))
-                    .foregroundStyle(DrawerTone.textPrimary)
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(DrawerTone.textSecondary)
                 Spacer()
                 Button(action: handleNewSessionTap) {
                     if isStartingNewSession {
@@ -203,20 +424,20 @@ struct NavigationDrawerView: View {
                 .frame(width: 28, height: 28)
                 .accessibilityLabel("New chat")
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, DrawerLayout.contentLeadingAnchor)
 
             if isLoading && sessions.isEmpty {
                 ProgressView("Loading chats…")
                     .font(.subheadline)
                     .tint(DrawerTone.accent)
                     .foregroundStyle(DrawerTone.textSecondary)
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, DrawerLayout.contentLeadingAnchor)
                     .padding(.top, 8)
             } else if sessions.isEmpty {
                 Text("No chats yet")
                     .font(.subheadline)
                     .foregroundStyle(DrawerTone.textSecondary)
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, DrawerLayout.contentLeadingAnchor)
                     .padding(.top, 8)
             } else {
                 LazyVStack(alignment: .leading, spacing: 8) {
@@ -237,18 +458,113 @@ struct NavigationDrawerView: View {
                         loadMoreChatsTrigger
                     }
                 }
-                .padding(.horizontal, 12)
+                .padding(.horizontal, DrawerLayout.chatListHorizontalPadding)
                 .padding(.bottom, 16)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var drawerSearchResultsContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if isLoading && sessions.isEmpty {
+                ProgressView("Loading chats...")
+                    .font(.subheadline)
+                    .tint(DrawerTone.accent)
+                    .foregroundStyle(DrawerTone.textSecondary)
+                    .padding(.horizontal, DrawerLayout.contentLeadingAnchor)
+                    .padding(.top, 8)
+            } else if visibleSearchSessions.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "No chats yet" : "No results")
+                        .font(.system(size: 17, weight: .regular))
+                        .foregroundStyle(DrawerTone.textPrimary)
+                    if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text("Try another chat title or keyword.")
+                            .font(.system(size: 14, weight: .regular))
+                            .foregroundStyle(DrawerTone.textSecondary)
+                    }
+                }
+                .padding(.horizontal, DrawerLayout.contentLeadingAnchor)
+                .padding(.top, 8)
+            } else {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    ForEach(visibleSearchSessions) { thread in
+                        sessionRow(thread)
+                    }
+                }
+                .padding(.horizontal, DrawerLayout.chatListHorizontalPadding)
+                .padding(.bottom, 16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var drawerBottomChrome: some View {
+        if isSearchActive {
+            drawerSearchInputBar
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+        } else {
+            drawerFooter
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
+
+    private var drawerSearchInputBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 16, weight: .regular))
+                .foregroundStyle(DrawerTone.textSecondary)
+
+            TextField("Search chats", text: $searchText)
+                .focused($isSearchFieldFocused)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+                .font(.system(size: 17, weight: .regular))
+                .foregroundStyle(DrawerTone.textPrimary)
+
+            if !searchText.isEmpty {
+                Button {
+                    searchText = ""
+                    debouncedSearchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 17, weight: .regular))
+                        .foregroundStyle(DrawerTone.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
+            }
+        }
+        .frame(height: 48)
+        .padding(.horizontal, 16)
+        .modifier(GlassCapsuleModifier(interactive: true))
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+        .padding(.bottom, searchInputBottomPadding)
+        .background(alignment: .top) {
+            DrawerFooterProgressiveBackdrop()
+                .frame(height: 104 + searchInputBottomPadding)
+                .offset(y: -28)
+                .allowsHitTesting(false)
+        }
+    }
+
+    private var searchInputBottomPadding: CGFloat {
+        if isSearchFieldFocused || drawerKeyboardOverlap > 0 {
+            return drawerKeyboardOverlap + 8
+        }
+        return 12 + bottomSafeAreaInset
     }
 
     @ViewBuilder
     private var drawerFooter: some View {
         let isSettingsSelected = selection == .primary(.settings)
         let foreground = isSettingsSelected ? DrawerTone.accent : DrawerTone.textPrimary
-        let iconFill = isSettingsSelected ? DrawerTone.iconFill : DrawerTone.iconNeutralFill
-        let rowFill = DrawerTone.rowFill
 
         Button {
             AppHaptics.light()
@@ -260,7 +576,7 @@ struct NavigationDrawerView: View {
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(foreground)
                     .frame(width: 34, height: 34)
-                    .background(iconFill, in: Circle())
+                    .modifier(GlassCircleModifier())
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Settings")
                         .font(.headline.weight(.semibold))
@@ -273,12 +589,11 @@ struct NavigationDrawerView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(14)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(rowFill)
-            )
+            .modifier(GlassRoundedRectModifier(cornerRadius: 24, interactive: true))
         }
         .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
         .accessibilityLabel("Settings, Account, limits, logout")
         .accessibilityValue(isSettingsSelected ? "Selected" : "")
         .padding(.horizontal, 16)
@@ -294,32 +609,12 @@ struct NavigationDrawerView: View {
 
     private struct DrawerFooterProgressiveBackdrop: View {
         var body: some View {
-            ZStack {
-                Rectangle()
-                    .fill(.ultraThinMaterial)
-                    .opacity(0.78)
-                    .mask(progressiveMask)
-
-                LinearGradient(
-                    stops: [
-                        .init(color: .clear, location: 0.0),
-                        .init(color: .black.opacity(0.10), location: 0.30),
-                        .init(color: .black.opacity(0.22), location: 0.68),
-                        .init(color: .black.opacity(0.30), location: 1.0)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            }
-        }
-
-        private var progressiveMask: some View {
             LinearGradient(
                 stops: [
                     .init(color: .clear, location: 0.0),
-                    .init(color: .black.opacity(0.24), location: 0.18),
-                    .init(color: .black.opacity(0.78), location: 0.58),
-                    .init(color: .black, location: 1.0)
+                    .init(color: .black.opacity(0.18), location: 0.22),
+                    .init(color: .black.opacity(0.66), location: 0.68),
+                    .init(color: .black.opacity(0.94), location: 1.0)
                 ],
                 startPoint: .top,
                 endPoint: .bottom
@@ -327,8 +622,65 @@ struct NavigationDrawerView: View {
         }
     }
 
+    private struct DrawerTopSoftBlurBackdrop: View {
+        let progress: CGFloat
+        let colorScheme: ColorScheme
+
+        var body: some View {
+            let progress = min(max(progress, 0), 1)
+            DrawerTransparentBlur(style: colorScheme == .dark ? .systemUltraThinMaterialDark : .systemUltraThinMaterialLight)
+                .opacity(Double(progress) * 0.34)
+                .mask(progressiveMask)
+        }
+
+        private var progressiveMask: some View {
+            LinearGradient(
+                stops: [
+                    .init(color: .black, location: 0.0),
+                    .init(color: .black, location: 0.58),
+                    .init(color: .black.opacity(0.22), location: 0.86),
+                    .init(color: .clear, location: 1.0)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+    }
+
+    private struct DrawerTransparentBlur: UIViewRepresentable {
+        let style: UIBlurEffect.Style
+
+        func makeUIView(context: Context) -> UIVisualEffectView {
+            let view = UIVisualEffectView(effect: UIBlurEffect(style: style))
+            view.backgroundColor = .clear
+            view.isUserInteractionEnabled = false
+            return view
+        }
+
+        func updateUIView(_ uiView: UIVisualEffectView, context: Context) {
+            uiView.effect = UIBlurEffect(style: style)
+        }
+    }
+
     private var sessions: [AppSessionSummary] {
-        sessionsModel.derivedData.allThreads
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["MACRODEX_DEBUG_DRAWER_SAMPLE_CHATS"] == "1" {
+            return NavigationDrawerDebugSamples.sessions
+        }
+        #endif
+
+        return sessionsModel.derivedData.allThreads
+    }
+
+    private var visibleSearchSessions: [AppSessionSummary] {
+        let trimmedQuery = debouncedSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let filtered: [AppSessionSummary]
+        if trimmedQuery.isEmpty {
+            filtered = sessions
+        } else {
+            filtered = sessions.filter { sessionMatchesSearch($0, query: trimmedQuery) }
+        }
+        return Array(filtered.prefix(80))
     }
 
     private var pinnedSessions: [AppSessionSummary] {
@@ -402,41 +754,35 @@ struct NavigationDrawerView: View {
 
         return Button {
             AppHaptics.light()
-            Task { await resumeSession(thread) }
+            openSessionImmediately(thread)
             drawerController.close()
+            Task { await resumeSession(thread, openedImmediately: true) }
         } label: {
             HStack(spacing: 10) {
-                if isPinned {
-                    Image(systemName: "pin.fill")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(DrawerTone.accent)
-                }
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(title)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(isActive ? DrawerTone.accent : DrawerTone.textPrimary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Text(relativeDate(updatedAt))
-                        .font(.caption)
-                        .foregroundStyle(DrawerTone.textSecondary)
-                }
-
-                Spacer(minLength: 12)
+                Text(title)
+                    .font(.system(size: 17, weight: .regular))
+                    .foregroundStyle(DrawerTone.textPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 10)
                 if resumingKey == thread.key || archivingKey == thread.key || renamingKey == thread.key {
                     ProgressView()
                         .controlSize(.small)
                         .tint(DrawerTone.accent)
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 12)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(isActive ? DrawerTone.selectedFill : DrawerTone.rowFill)
-            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, DrawerLayout.chatRowInnerHorizontalPadding)
+            .padding(.vertical, 10)
+            .background {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(isActive ? DrawerTone.selectedFill : Color.clear)
+                    .padding(.horizontal, -DrawerLayout.selectedRowHorizontalBleed)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(sessionAccessibilityLabel(title: title, updatedAt: updatedAt, isPinned: isPinned))
         .accessibilityValue(isActive ? "Selected" : "")
@@ -474,13 +820,170 @@ struct NavigationDrawerView: View {
             .font(.caption.weight(.bold))
             .foregroundStyle(DrawerTone.textTertiary)
             .textCase(.uppercase)
-            .padding(.horizontal, 4)
+            .padding(.horizontal, DrawerLayout.chatRowInnerHorizontalPadding)
             .padding(.bottom, 2)
     }
 
     private func sessionAccessibilityLabel(title: String, updatedAt: Date, isPinned: Bool) -> String {
         let pinPrefix = isPinned ? "Pinned chat, " : "Chat, "
         return "\(pinPrefix)\(title), updated \(relativeDate(updatedAt))"
+    }
+
+    private func activateSearch() {
+        AppHaptics.light()
+        searchDismissPending = false
+        withAnimation(.easeOut(duration: 0.16)) {
+            isSearchActive = true
+        }
+        debouncedSearchText = searchText
+        Task { @MainActor in
+            await Task.yield()
+            guard isSearchActive else { return }
+            isSearchFieldFocused = true
+        }
+    }
+
+    private func resetSearch(immediate: Bool) {
+        searchDebounceTask?.cancel()
+        searchDebounceTask = nil
+        isSearchFieldFocused = false
+        searchText = ""
+        debouncedSearchText = ""
+
+        let update = {
+            isSearchActive = false
+            searchDismissPending = false
+            setDrawerKeyboardOverlap(0, notification: nil)
+        }
+
+        if immediate {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction, update)
+        } else if drawerKeyboardOverlap > 0.5 {
+            AppHaptics.light()
+            searchDismissPending = true
+        } else {
+            AppHaptics.light()
+            withAnimation(.easeOut(duration: 0.18), update)
+        }
+    }
+
+    private func scheduleSearchDebounce(for query: String) {
+        searchDebounceTask?.cancel()
+        searchDebounceTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(160))
+            guard !Task.isCancelled else { return }
+            debouncedSearchText = query
+        }
+    }
+
+    private func updateDrawerKeyboardOverlap(from notification: Notification) {
+        guard isSearchActive else {
+            setDrawerKeyboardOverlap(0, notification: notification)
+            return
+        }
+        guard let endFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
+              let window = UIApplication.shared.connectedScenes
+                  .compactMap({ $0 as? UIWindowScene })
+                  .flatMap(\.windows)
+                  .first(where: \.isKeyWindow)
+        else { return }
+
+        let keyboardFrame = window.convert(endFrame, from: nil)
+        let overlap = max(0, window.bounds.maxY - keyboardFrame.minY)
+        setDrawerKeyboardOverlap(overlap, notification: notification)
+    }
+
+    private func handleDrawerKeyboardWillHide(_ notification: Notification) {
+        if searchDismissPending {
+            let update = {
+                isSearchActive = false
+                searchDismissPending = false
+                drawerKeyboardOverlap = 0
+            }
+            if let animation = drawerKeyboardAnimation(from: notification) {
+                withAnimation(animation, update)
+            } else {
+                withAnimation(.easeOut(duration: 0.18), update)
+            }
+        } else {
+            setDrawerKeyboardOverlap(0, notification: notification)
+        }
+    }
+
+    private func setDrawerKeyboardOverlap(_ overlap: CGFloat, notification: Notification?) {
+        let clamped = max(0, overlap)
+        guard abs(drawerKeyboardOverlap - clamped) > 0.5 else { return }
+
+        let update = {
+            drawerKeyboardOverlap = clamped
+        }
+
+        guard let animation = notification.flatMap(drawerKeyboardAnimation(from:)) else {
+            withAnimation(.easeOut(duration: 0.18), update)
+            return
+        }
+
+        withAnimation(animation, update)
+    }
+
+    private func drawerKeyboardAnimation(from notification: Notification) -> Animation? {
+        guard let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double,
+              duration > 0
+        else { return nil }
+
+        let clampedDuration = min(max(duration, 0.16), 0.42)
+        let rawCurve = (notification.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? Int)
+            ?? UIView.AnimationCurve.easeOut.rawValue
+        switch UIView.AnimationCurve(rawValue: rawCurve) ?? .easeOut {
+        case .easeInOut:
+            return .easeInOut(duration: clampedDuration)
+        case .easeIn:
+            return .easeIn(duration: clampedDuration)
+        case .easeOut:
+            return .easeOut(duration: clampedDuration)
+        case .linear:
+            return .linear(duration: clampedDuration)
+        @unknown default:
+            return .easeOut(duration: clampedDuration)
+        }
+    }
+
+    private var drawerHeaderBackdropProgress: CGFloat {
+        min(max(drawerScrollDistance / 34, 0), 1)
+    }
+
+    private func updateDrawerScrollDistance(_ distance: CGFloat) {
+        guard abs(drawerScrollDistance - distance) > 0.5 else { return }
+        drawerScrollDistance = distance
+    }
+
+    private func sessionMatchesSearch(_ thread: AppSessionSummary, query: String) -> Bool {
+        let parentTitle = sessionsModel.derivedData.parentByKey[thread.key]?.sessionTitle ?? ""
+        let fields = [
+            sessionTitle(for: thread),
+            thread.preview,
+            thread.cwd,
+            thread.serverDisplayName,
+            thread.modelProvider,
+            thread.agentDisplayLabel ?? "",
+            parentTitle,
+            thread.lastUserMessage ?? "",
+            thread.lastResponsePreview ?? ""
+        ]
+
+        if fields.contains(where: { $0.localizedStandardContains(query) }) {
+            return true
+        }
+
+        let tokens = query
+            .split(whereSeparator: \.isWhitespace)
+            .map(String.init)
+        guard !tokens.isEmpty else { return true }
+        return tokens.allSatisfy { token in
+            fields.contains { $0.localizedStandardContains(token) }
+        }
     }
 
     private func togglePinned(_ thread: AppSessionSummary) {
@@ -602,14 +1105,21 @@ struct NavigationDrawerView: View {
         visibleRecentSessionCount = min(visibleRecentSessionCount + 10, recentSessions.count)
     }
 
-    private func resumeSession(_ thread: AppSessionSummary) async {
+    private func openSessionImmediately(_ thread: AppSessionSummary) {
+        workDir = thread.cwd
+        appState.currentCwd = thread.cwd
+        appModel.activateThread(thread.key)
+        onOpenConversation(thread.key)
+    }
+
+    private func resumeSession(_ thread: AppSessionSummary, openedImmediately: Bool = false) async {
         guard resumingKey == nil else { return }
         resumingKey = thread.key
         defer { resumingKey = nil }
 
-        workDir = thread.cwd
-        appState.currentCwd = thread.cwd
-        onOpenConversation(thread.key)
+        if !openedImmediately {
+            openSessionImmediately(thread)
+        }
 
         do {
             await conversationWarmup.prewarmIfNeeded()
@@ -622,6 +1132,9 @@ struct NavigationDrawerView: View {
             )
             if !thread.cwd.isEmpty {
                 RecentDirectoryStore.shared.record(path: thread.cwd, for: thread.key.serverId)
+            }
+            if nextKey != thread.key {
+                onOpenConversation(nextKey)
             }
             appModel.activateThread(nextKey)
         } catch {

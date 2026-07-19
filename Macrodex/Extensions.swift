@@ -1,6 +1,37 @@
 import SwiftUI
 import UIKit
 
+struct MacrodexKeyboardGeometry {
+    static func overlap(from notification: Notification) -> CGFloat? {
+        guard let endFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
+              let window = UIApplication.shared.connectedScenes
+                  .compactMap({ $0 as? UIWindowScene })
+                  .flatMap(\.windows)
+                  .first(where: \.isKeyWindow)
+        else {
+            return nil
+        }
+
+        let keyboardFrame = window.convert(endFrame, from: nil)
+        return max(0, window.bounds.maxY - keyboardFrame.minY)
+    }
+
+    static func progress(overlap: CGFloat, maximumOverlap: CGFloat) -> CGFloat {
+        guard maximumOverlap > 1 else { return overlap > 1 ? 1 : 0 }
+        return min(max(overlap / maximumOverlap, 0), 1)
+    }
+
+    static func bottomPadding(
+        overlap: CGFloat,
+        maximumOverlap: CGFloat,
+        resting: CGFloat,
+        attached: CGFloat
+    ) -> CGFloat {
+        let progress = progress(overlap: overlap, maximumOverlap: maximumOverlap)
+        return resting + (attached - resting) * progress
+    }
+}
+
 enum AppHaptics {
     static func light(intensity: CGFloat = 0.7) {
         let generator = UIImpactFeedbackGenerator(style: .light)
@@ -491,10 +522,16 @@ struct GlassCapsuleModifier: ViewModifier {
 }
 
 struct GlassCircleModifier: ViewModifier {
+    var interactive: Bool = false
+
     func body(content: Content) -> some View {
         #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
-            content.glassEffect(.regular, in: .circle)
+            if interactive {
+                content.glassEffect(.regular.interactive(), in: .circle)
+            } else {
+                content.glassEffect(.regular, in: .circle)
+            }
         } else {
             fallback(content: content)
         }
@@ -507,6 +544,51 @@ struct GlassCircleModifier: ViewModifier {
         content
             .background(MacrodexTheme.surfaceLight)
             .clipShape(Circle())
+    }
+}
+
+struct MacrodexBottomProgressiveBackdrop: View {
+    let colorScheme: ColorScheme
+
+    private var tint: Color {
+        colorScheme == .dark ? .black : .white
+    }
+
+    private var materialOpacity: Double {
+        colorScheme == .dark ? 0.88 : 0.78
+    }
+
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(.regularMaterial)
+                .opacity(materialOpacity)
+                .mask(progressiveMask)
+
+            LinearGradient(
+                stops: [
+                    .init(color: .clear, location: 0.0),
+                    .init(color: tint.opacity(colorScheme == .dark ? 0.14 : 0.16), location: 0.30),
+                    .init(color: tint.opacity(colorScheme == .dark ? 0.36 : 0.28), location: 0.68),
+                    .init(color: tint.opacity(colorScheme == .dark ? 0.58 : 0.46), location: 1.0)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+    }
+
+    private var progressiveMask: some View {
+        LinearGradient(
+            stops: [
+                .init(color: .clear, location: 0.0),
+                .init(color: .black.opacity(0.24), location: 0.18),
+                .init(color: .black.opacity(0.78), location: 0.58),
+                .init(color: .black, location: 1.0)
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
     }
 }
 

@@ -194,6 +194,10 @@ final class DrawerController {
         progress > 0.001 || Date() < contentInteractionSuppressedUntil
     }
 
+    var isVisiblyOpen: Bool {
+        isOpen || progress > 0.001
+    }
+
     func open() {
         setOpen(true, triggerHaptic: true)
     }
@@ -253,14 +257,29 @@ struct DrawerMenuButton: View {
                 .frame(width: 44, height: 44)
         }
         .buttonStyle(.plain)
-        .contentShape(Circle())
+        .contentShape(Rectangle())
         .accessibilityIdentifier("drawer.menu")
         .accessibilityLabel(drawerController.isOpen ? "Close menu" : "Open menu")
     }
 }
 
+private enum AppDrawerMetrics {
+    static let contentPlateCornerRadius: CGFloat = 58
+
+    @MainActor
+    static var keyWindowHeight: CGFloat? {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)?
+            .bounds
+            .height
+    }
+}
+
 struct AppDrawerContainer<Drawer: View, Content: View>: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.displayScale) private var displayScale
 
     let controller: DrawerController
     var openingActivationWidth: CGFloat = 52
@@ -282,14 +301,41 @@ struct AppDrawerContainer<Drawer: View, Content: View>: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let drawerWidth = min(320, max(276, geometry.size.width * 0.8))
+            let drawerWidth = min(344, max(296, geometry.size.width * 0.78))
             let progress = min(max(drawerProgress, 0), 1)
             let contentOffset = drawerWidth * progress
             let contentShift = contentOffset
-            let drawerTopInset = max(geometry.safeAreaInsets.top, topSafeAreaInset)
+            let contentCornerRadius = progress > 0.001 ? AppDrawerMetrics.contentPlateCornerRadius : 0
+            let contentPlateHeight = progress > 0.001
+                ? max(geometry.size.height, AppDrawerMetrics.keyWindowHeight ?? geometry.size.height)
+                : geometry.size.height
+            let drawerScale = 0.9 + 0.1 * progress
+            let drawerActivationWidth = min(
+                max(openingActivationWidth, 0),
+                geometry.size.width * 0.75
+            )
+            let contentPlateShape = UnevenRoundedRectangle(
+                cornerRadii: .init(
+                    topLeading: contentCornerRadius,
+                    bottomLeading: contentCornerRadius,
+                    bottomTrailing: 0,
+                    topTrailing: 0
+                ),
+                style: .continuous
+            )
 
-            ZStack(alignment: .leading) {
+            ZStack(alignment: .topLeading) {
                 content()
+                    .frame(width: geometry.size.width, height: contentPlateHeight)
+                    .background(Color(uiColor: .systemBackground))
+                    .overlay {
+                        contentPlateWash(progress: progress)
+                    }
+                    .clipShape(contentPlateShape)
+                    .overlay {
+                        contentPlateBorder(shape: contentPlateShape, progress: progress)
+                    }
+                    .ignoresSafeArea(progress > 0.001 ? .keyboard : [], edges: .bottom)
                     .offset(x: contentShift)
                     .allowsHitTesting(!(suppressContentHitTesting || isDraggingDrawer || progress > 0.001))
                     .zIndex(1)
@@ -300,8 +346,8 @@ struct AppDrawerContainer<Drawer: View, Content: View>: View {
                             .frame(width: contentOffset)
                             .allowsHitTesting(false)
 
-                        overlayTint
-                            .opacity(0.30 * progress)
+                        Color.black
+                            .opacity(0.001)
                             .contentShape(Rectangle())
                             .onTapGesture {
                                 settleDrawer(open: false)
@@ -314,7 +360,6 @@ struct AppDrawerContainer<Drawer: View, Content: View>: View {
                 drawer()
                     .frame(width: drawerWidth)
                     .frame(maxHeight: .infinity, alignment: .top)
-                    .padding(.top, drawerTopInset)
                     .background(Color(uiColor: .systemBackground))
                     .clipShape(
                         UnevenRoundedRectangle(
@@ -322,13 +367,13 @@ struct AppDrawerContainer<Drawer: View, Content: View>: View {
                                 topLeading: 0,
                                 bottomLeading: 0,
                                 bottomTrailing: 0,
-                                topTrailing: 28
+                                topTrailing: 0
                             ),
                             style: .continuous
                         )
                     )
                     .allowsHitTesting(controller.isOpen && !isDraggingDrawer && !isSettlingDrawer)
-                    .shadow(color: .black.opacity(0.12), radius: 18, x: 6, y: 0)
+                    .scaleEffect(drawerScale, anchor: .center)
                     .offset(x: contentOffset - drawerWidth)
                     .zIndex(3)
 
@@ -343,7 +388,7 @@ struct AppDrawerContainer<Drawer: View, Content: View>: View {
                     progress: progress,
                     isOpen: controller.isOpen,
                     isSettling: isSettlingDrawer,
-                    activationWidth: min(max(openingActivationWidth, 0), drawerWidth),
+                    activationWidth: drawerActivationWidth,
                     drawerWidth: drawerWidth,
                     onBegan: {
                         beginDrawerPan()
@@ -386,8 +431,38 @@ struct AppDrawerContainer<Drawer: View, Content: View>: View {
         }
     }
 
-    private var overlayTint: Color {
-        colorScheme == .dark ? .white : .black
+    @ViewBuilder
+    private func contentPlateBorder(shape: UnevenRoundedRectangle, progress: CGFloat) -> some View {
+        if progress > 0.001 {
+            shape
+                .strokeBorder(
+                    contentPlateStroke.opacity(0.05 + 0.25 * Double(progress)),
+                    lineWidth: 1 / max(displayScale, 1)
+                )
+        }
+    }
+
+    private var contentPlateStroke: Color {
+        colorScheme == .dark ? .white : Color(uiColor: .systemGray2)
+    }
+
+    @ViewBuilder
+    private func contentPlateWash(progress: CGFloat) -> some View {
+        if progress > 0.001 {
+            Rectangle()
+                .fill(contentPlateWashColor)
+                .opacity(contentPlateWashOpacity * progress)
+        }
+    }
+
+    private var contentPlateWashColor: Color {
+        colorScheme == .dark
+            ? Color(red: 0.11, green: 0.11, blue: 0.11)
+            : Color(uiColor: .systemGray5)
+    }
+
+    private var contentPlateWashOpacity: Double {
+        colorScheme == .dark ? 0.48 : 0.58
     }
 
     private func shouldCaptureDrawerInterrupts(progress: CGFloat) -> Bool {

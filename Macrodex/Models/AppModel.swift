@@ -1226,12 +1226,39 @@ final class AppModel {
         in items: inout [HydratedConversationItem]
     ) -> Bool {
         let previous = items
+        removeMatchingPendingUserPlaceholders(for: item, in: &items)
         if let itemIndex = items.firstIndex(where: { $0.id == item.id }) {
             items.remove(at: itemIndex)
         }
         let insertionIndex = insertionIndex(for: item, in: items)
         items.insert(item, at: insertionIndex)
         return previous != items
+    }
+
+    private static func removeMatchingPendingUserPlaceholders(
+        for item: HydratedConversationItem,
+        in items: inout [HydratedConversationItem]
+    ) {
+        guard !item.id.hasPrefix("pending-user-"),
+              item.isFromUserTurnBoundary,
+              case .user(let incomingData) = item.content
+        else { return }
+
+        let incomingText = normalizedUserMessageText(incomingData.text)
+        guard !incomingText.isEmpty else { return }
+
+        items.removeAll { candidate in
+            guard candidate.id.hasPrefix("pending-user-"),
+                  candidate.sourceTurnId == "pending-turn",
+                  candidate.isFromUserTurnBoundary,
+                  case .user(let pendingData) = candidate.content
+            else { return false }
+            return normalizedUserMessageText(pendingData.text) == incomingText
+        }
+    }
+
+    private static func normalizedUserMessageText(_ text: String) -> String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func insertionIndexWithinSourceTurn(
@@ -1365,6 +1392,9 @@ final class AppModel {
         let trimmedSelection = selectedModel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let models = availableModels(for: serverId)
         guard requiresImageInput else {
+            if Self.isFoundationModelID(trimmedSelection) {
+                return trimmedSelection
+            }
             let selectedModelIsAvailable = models.isEmpty || models.contains { modelMatches($0, trimmedSelection) }
             return trimmedSelection.isEmpty || isSparkModelID(trimmedSelection) || !selectedModelIsAvailable
                 ? preferredDefaultModelID(for: serverId)
@@ -1663,12 +1693,16 @@ final class AppModel {
         prompt: String,
         model: String?,
         reasoningEffort: ReasoningEffort?,
-        approvalPolicy: AppAskForApproval?
+        approvalPolicy: AppAskForApproval?,
+        includeUserMessage: Bool = false
     ) {
         let now = Int64(Date().timeIntervalSince1970)
         let preview = Self.previewText(prompt, fallback: "New chat")
         let resolvedModel = model?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
         let provider = Self.providerID(for: resolvedModel)
+        let hydratedItems = includeUserMessage
+            ? Self.pendingUserMessageItems(prompt: prompt, timestamp: Double(now))
+            : []
         let info = ThreadInfo(
             id: key.threadId,
             title: nil,
@@ -1693,7 +1727,7 @@ final class AppModel {
             reasoningEffort: reasoningEffort?.wireValue,
             effectiveApprovalPolicy: approvalPolicy,
             effectiveSandboxPolicy: nil,
-            hydratedConversationItems: [],
+            hydratedConversationItems: hydratedItems,
             queuedFollowUps: [],
             activeTurnId: nil,
             activePlanProgress: nil,
@@ -1754,6 +1788,10 @@ final class AppModel {
         lastError = nil
     }
 
+    func removePendingThread(key: ThreadKey) {
+        removeThreadSnapshot(for: key)
+    }
+
     private static func previewText(_ text: String, fallback: String) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return fallback }
@@ -1763,9 +1801,40 @@ final class AppModel {
         return oneLine.count > 80 ? String(oneLine.prefix(77)) + "..." : oneLine
     }
 
+    private static func pendingUserMessageItems(prompt: String, timestamp: Double) -> [HydratedConversationItem] {
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        return [
+            HydratedConversationItem(
+                id: "pending-user-\(UUID().uuidString)",
+                content: .user(HydratedUserMessageData(text: trimmed, imageDataUris: [])),
+                sourceTurnId: "pending-turn",
+                sourceTurnIndex: 0,
+                timestamp: timestamp,
+                isFromUserTurnBoundary: true
+            )
+        ]
+    }
+
     private static func providerID(for model: String?) -> String {
         guard let model else { return "openai" }
-        return model.hasPrefix("google/") ? "google" : "openai"
+        let normalized = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized.hasPrefix("google/") {
+            return "google"
+        }
+        if normalized == "system"
+            || normalized == "pcc"
+            || normalized.hasPrefix("foundationmodels/") {
+            return "foundationmodels"
+        }
+        return "openai"
+    }
+
+    private static func isFoundationModelID(_ model: String) -> Bool {
+        let normalized = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized == "system"
+            || normalized == "pcc"
+            || normalized.hasPrefix("foundationmodels/")
     }
 
     private func hasAuthoritativePermissions(_ thread: AppThreadSnapshot) -> Bool {
